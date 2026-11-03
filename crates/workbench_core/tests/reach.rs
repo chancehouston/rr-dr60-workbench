@@ -87,8 +87,16 @@ fn pipeline_methods() -> Vec<String> {
     names
 }
 
-/// The workbench's own sources (both crates' `src`).
+/// The workbench's own sources (both crates' `src`), comment lines stripped (spec 006 coach 5).
 fn workbench_source() -> String {
+    workbench_source_raw()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn workbench_source_raw() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("crates");
@@ -103,7 +111,7 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 52] = [
+const LISTED: [&str; 73] = [
     "start_recording",
     "record_with_changes",
     "stop_recording_with_changes",
@@ -158,6 +166,29 @@ const LISTED: [&str; 52] = [
     "set_component_parameter",
     // Spec 005b FR-008 (restated): the coder's delay in the gate reports.
     "speech_codec_info",
+    // Reached by 001 and 004, listed by 006's completeness check.
+    "playback_latency_samples",
+    "stop_recording",
+    // Spec 006 FR-005: the last nineteen.
+    "process_with_events",
+    "process_in_place",
+    "process_in_place_with_events",
+    "process_in_place_with_events_and_changes",
+    "reset",
+    "play",
+    "route",
+    "set_route",
+    "volume",
+    "set_volume",
+    "battery_volts",
+    "set_battery_volts",
+    "playback_speed",
+    "set_playback_speed",
+    "playback_speed_mode",
+    "set_playback_speed_mode",
+    "component",
+    "component_parameter_value",
+    "record_latency_pre_encoder_samples",
 ];
 
 /// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).
@@ -204,6 +235,17 @@ fn reach() {
         70,
         "the public, reachable Pipeline methods at engine 0.92.0 (81 less the 11 `__` test hooks)"
     );
+    // Spec 006 D5: every method reached (constitution II), and the list complete.
+    assert_eq!(
+        called.len(),
+        methods.len(),
+        "every public Pipeline method is called"
+    );
+    let mut listed: Vec<&str> = LISTED.to_vec();
+    listed.sort_unstable();
+    listed.dedup();
+    let all: Vec<&str> = methods.iter().map(String::as_str).collect();
+    assert_eq!(listed, all, "the list by feature names every method");
     for m in LISTED {
         assert!(
             methods.iter().any(|x| x == m),
@@ -213,5 +255,47 @@ fn reach() {
             called.iter().any(|x| *x == m),
             "the spec lists {m}, but the workbench does not call it"
         );
+    }
+}
+
+/// Spec 006 coach 5: the nineteen are called as `Pipeline::name(` in the workbench's sources, and
+/// the window calls the entry points that reach them.
+#[test]
+fn the_nineteen_by_name_and_from_the_window() {
+    let src = workbench_source();
+    for m in [
+        "process_with_events",
+        "process_in_place",
+        "process_in_place_with_events",
+        "process_in_place_with_events_and_changes",
+        "reset",
+        "play",
+        "route",
+        "set_route",
+        "volume",
+        "set_volume",
+        "battery_volts",
+        "set_battery_volts",
+        "playback_speed",
+        "set_playback_speed",
+        "playback_speed_mode",
+        "set_playback_speed_mode",
+        "component",
+        "component_parameter_value",
+        "record_latency_pre_encoder_samples",
+    ] {
+        assert!(src.contains(&format!("Pipeline::{m}(")), "{m}");
+    }
+    let main = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../workbench/src/main.rs"),
+    )
+    .unwrap();
+    for entry in [
+        "checks::one_pass_check(",
+        ".playback_check(",
+        ".readings(",
+        "tour::without_stage(",
+    ] {
+        assert!(main.contains(entry), "the window calls {entry}");
     }
 }
