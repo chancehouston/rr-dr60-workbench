@@ -124,7 +124,7 @@ was read or run.
   - A behavior test over every tap × `vas.enabled` pins the predicate: a drop-mode burst plus 3 s of
     silence must come out shorter exactly when the predicate holds. If the engine's behavior
     moves, this test fails.
-  - An **engine issue** asks for a published `Pipeline::gate_runs()` (P11).
+  - An **engine issue** asks for a published `Pipeline::gate_runs()` ([rr-dr60-emu#72](https://github.com/chancehouston/rr-dr60-emu/issues/72), P11).
 - **The tail (D7)**: T = `latency_samples()` + `drain_samples()`, labelled "the engine's latency
   plus its playback drain".
   - `drain_samples()` is the player's drain (`transport.rs:1342`): stage 10's 121 device samples,
@@ -142,7 +142,7 @@ was read or run.
     - `tail_is_sufficient`: extending the tail by a further second leaves the render's prefix
       bit-identical, with the extra output below −100 dBFS at the default settings, hiss off.
     - A reported figure: the energy after T with a high-Q band filter.
-  - An **engine issue** asks for a one-pass drain figure (P11).
+  - An **engine issue** asks for a one-pass drain figure ([rr-dr60-emu#73](https://github.com/chancehouston/rr-dr60-emu/issues/73), P11).
 - **The readings**:
   - The splices or muted regions are Σ `BlockInfo.events`, shown only when the gate is reached.
   - Paused at end is the last call's `paused`.
@@ -220,7 +220,7 @@ and over the render's f32 little-endian bytes. hound keeps the bits, so the dige
   test fails.
 - **Why not a dependency**: a dev-dependency on `rr_dr60_harness` would switch on the engine's
   `__test-hooks` feature in our test build.
-- **Engine issue**: the engine should publish one list from its core (P6).
+- **Engine issue**: the engine should publish one list from its core ([rr-dr60-emu#74](https://github.com/chancehouston/rr-dr60-emu/issues/74), P6).
 
 ## R-14 The reach test (FR-017; coach 3)
 
