@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (008)
+
+- The engine pin moves to `3890bfe` (rr-dr60-emu 0.93.0, the merge of engine spec 026, the host reads).
+
 ### Added
 
 - Feature 004b, live playback: a clone of the device engine plays an item in the output callback; the route, volume, battery, speed level and mode and the stage switches 10 – 13 change at once; the take keeps every change in scheduling order, uses 004's playback sidecar, and replays as a prefix when stopped early.
