@@ -60,6 +60,22 @@ struct Job {
     rx: Receiver<Result<Option<Render>, String>>,
 }
 
+/// An opened processing record (spec 005 D3).
+struct OpenedRecord {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    readout: rr_dr60::record::RecordReadout,
+    check: Option<(u32, bool)>,
+}
+
+/// A re-render running on its own thread (spec 005 D4).
+struct ReRenderJob {
+    progress: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    total: u64,
+    rx: Receiver<Result<workbench_core::records::Outcome, String>>,
+}
+
 /// A live playback on a clone of the device (spec 004b).
 struct LivePlay {
     playback: Playback,
@@ -90,6 +106,9 @@ struct Workbench {
     sched_control: u32,
     sched_value: String,
     sched_time: String,
+    record: Option<OpenedRecord>,
+    check_item: u32,
+    rerender: Option<ReRenderJob>,
 }
 
 impl Workbench {
@@ -117,6 +136,9 @@ impl Workbench {
             sched_control: 1,
             sched_value: String::new(),
             sched_time: String::new(),
+            record: None,
+            check_item: 1,
+            rerender: None,
         }
     }
 
@@ -604,7 +626,11 @@ impl eframe::App for Workbench {
                 views::Tab::Meters => self.views.meters(ui, &self.session),
                 views::Tab::Taps => self.views.taps(ui, &self.session),
                 views::Tab::Stages => self.views.stages(ui),
-                views::Tab::Device => self.device_view(ui),
+                views::Tab::Device => {
+                    self.device_view(ui);
+                    ui.separator();
+                    self.records_view(ui, &ctx);
+                }
             }
         });
     }
@@ -1277,7 +1303,14 @@ impl Workbench {
             {
                 let start = (self.record_start_s * f64::from(inp.rate_hz)) as usize;
                 let changes = device::record_request(&self.schedule, inp.rate_hz);
-                self.messages = vec![match dev.record(&inp.samples, start, None, &changes) {
+                let source = workbench_core::records::RunSource::of(inp, start as u64);
+                self.messages = vec![match dev.record_from(
+                    &inp.samples,
+                    source,
+                    start,
+                    None,
+                    &changes,
+                ) {
                     Ok(o) => match o.end {
                         RecordEnd::Kept { number, length } => {
                             format!("Recorded item {number}: {length} device samples")
@@ -1298,6 +1331,7 @@ impl Workbench {
         let mut export = None;
         let mut play = None;
         let mut play_live = None;
+        let mut save_record = None;
         egui::Grid::new("items").striped(true).show(ui, |ui| {
             for h in ["item", "length", "counter", "digest", ""] {
                 ui.strong(h);
@@ -1333,6 +1367,9 @@ impl Workbench {
                     }
                     if ui.small_button("export…").clicked() {
                         export = Some(it.number);
+                    }
+                    if ui.small_button("save record…").clicked() {
+                        save_record = Some(it.number);
                     }
                     if ui.small_button("erase").clicked() {
                         erase = Some(it.number);
@@ -1386,6 +1423,13 @@ impl Workbench {
                 Ok(()) => format!("Exported item {n} to {}", path.display()),
                 Err(e) => e,
             }];
+        }
+        if let Some(n) = save_record
+            && let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!("item{n}.record.txt"))
+                .save_file()
+        {
+            self.messages = vec![save_record_files(dev, n, self.session.input(), &path)];
         }
         if let Some(n) = play {
             // The playback values from the panel's rows, the schedule list's playback entries.
@@ -1532,6 +1576,271 @@ impl Workbench {
 
     /// The live playback's controls (spec 004b D2): each change is sent to the callback and
     /// lands at the stream's current position.
+    /// The processing record section (spec 005 D3, D4).
+    fn records_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use workbench_core::records;
+        ui.heading("Processing record");
+        self.poll_rerender();
+        ui.horizontal(|ui| {
+            if ui.button("Open processing record…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("processing record", &["txt"])
+                    .pick_file()
+            {
+                self.open_record(path);
+            }
+            if self.record.is_some() && ui.button("Close").clicked() {
+                self.record = None;
+            }
+        });
+        let Some(rec) = &mut self.record else {
+            return;
+        };
+        let r = &rec.readout;
+        ui.label(rec.path.display().to_string());
+        let ver = |v: [u16; 3]| format!("{}.{}.{}", v[0], v[1], v[2]);
+        egui::Grid::new("record_readout")
+            .striped(true)
+            .show(ui, |ui| {
+                let mut row = |k: &str, v: String| {
+                    ui.label(k);
+                    ui.monospace(v);
+                    ui.end_row();
+                };
+                row("form version", r.form_version.to_string());
+                row("library version", ver(r.library_version));
+                row("host rate", format!("{} Hz", r.host_rate_hz));
+                row("origin", format!("{:?}", r.origin));
+                row("seed", r.seed.to_string());
+                row("recording counter", r.recording_counter.to_string());
+                row(
+                    "stored form",
+                    format!(
+                        "version {}, coder model {}, {:?}, {} units",
+                        r.stored_form_version,
+                        ver(r.stored_codec_model_version),
+                        r.encoding,
+                        r.stored_unit_count
+                    ),
+                );
+                row("stored form digest", format!("{:016x}", r.recording_digest));
+                row(
+                    "remaining at the start",
+                    format!("{} device samples", r.remaining_samples_at_start),
+                );
+                row(
+                    "splices or muted regions",
+                    format!("{} (in the record: {})", r.events_total, r.event_count),
+                );
+                row(
+                    "change entries",
+                    format!("{} (in the record: {})", r.changes_total, r.change_count),
+                );
+                row(
+                    "stop",
+                    format!(
+                        "{:?} at input {}, padding from {}, {} input samples, {} of silence",
+                        r.stop.how,
+                        r.stop.stop_input_position,
+                        r.stop.padding_start_sample,
+                        r.stop.input_samples_total,
+                        r.stop.silence_fed_samples
+                    ),
+                );
+                row("slot", format!("{:?} {:?}", r.component, &r.store[..4]));
+                row("stage mask", format!("0x{:04x}", r.stage_mask));
+                let names = records::flag_names(r.flags);
+                row(
+                    "flags",
+                    if names.is_empty() {
+                        "none".into()
+                    } else {
+                        names.join(", ")
+                    },
+                );
+            });
+        for (i, v) in r.stage_model_versions.iter().enumerate() {
+            if *v != [0, 0, 0] {
+                ui.label(format!("stage {} model {}", i + 1, ver(*v)));
+            }
+        }
+        for name in records::unknown_settings(&rec.bytes, r) {
+            ui.label(format!("Unknown setting in the record: {name}"));
+        }
+        egui::CollapsingHeader::new("Settings against the panel").show(ui, |ui| {
+            let panel: Vec<_> = self
+                .session
+                .panel()
+                .map(|p| p.rows().iter().map(|r| (r.index, r.value)).collect())
+                .unwrap_or_default();
+            match records::settings_diff(r, &panel) {
+                Ok(None) => {
+                    ui.label("No settings in an imported record");
+                }
+                Ok(Some(d)) if d.is_empty() => {
+                    ui.label("No difference");
+                }
+                Ok(Some(d)) => {
+                    egui::Grid::new("record_diff").striped(true).show(ui, |ui| {
+                        for h in ["control", "record", "panel"] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+                        for row in d {
+                            ui.label(row.identifier);
+                            ui.monospace(workbench_core::sidecar::fmt_reading(row.record));
+                            ui.monospace(workbench_core::sidecar::fmt_reading(row.panel));
+                            ui.end_row();
+                        }
+                    });
+                }
+                Err(e) => {
+                    ui.label(e.to_string());
+                }
+            }
+            ui.label(format!(
+                "Not in a record: {}",
+                records::not_in_record().join(", ")
+            ));
+        });
+        ui.horizontal(|ui| {
+            ui.label("item");
+            ui.add(egui::DragValue::new(&mut self.check_item).range(1..=99));
+            if ui.button("Check against item").clicked()
+                && let Some(dev) = &self.device
+            {
+                match dev.check_record(self.check_item, &mut rec.readout) {
+                    Ok(same) => rec.check = Some((self.check_item, same)),
+                    Err(e) => self.messages = vec![e.to_string()],
+                }
+            }
+            if let Some((n, same)) = rec.check {
+                ui.label(if same {
+                    format!("Item {n} is this recording")
+                } else {
+                    format!("Item {n} is not this recording")
+                });
+            }
+        });
+        if let Some(job) = &self.rerender {
+            ui.horizontal(|ui| {
+                let done = job.progress.load(Ordering::Relaxed);
+                ui.add(
+                    egui::ProgressBar::new(done as f32 / job.total.max(1) as f32)
+                        .text("re-rendering"),
+                );
+                if ui.button("Cancel").clicked() {
+                    job.cancel.store(true, Ordering::Relaxed);
+                }
+            });
+            ctx.request_repaint();
+        } else if ui.button("Re-render from the session's input").clicked() {
+            self.start_rerender(ctx);
+        }
+    }
+
+    fn open_record(&mut self, path: PathBuf) {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.messages = vec![format!("{}: {e}", text::OPEN_IO)];
+                return;
+            }
+        };
+        let read = match &self.device {
+            Some(d) => d.read_record(&bytes),
+            None => {
+                let mut r = rr_dr60::record::RecordReadout::default();
+                rr_dr60::record::read(&bytes, &mut r).map(|()| r)
+            }
+        };
+        match read {
+            Ok(readout) => {
+                self.record = Some(OpenedRecord {
+                    path,
+                    bytes,
+                    readout,
+                    check: None,
+                });
+            }
+            Err(e) => self.messages = vec![format!("The record is refused: {e}")],
+        }
+    }
+
+    fn start_rerender(&mut self, ctx: &egui::Context) {
+        use workbench_core::records;
+        let (Some(rec), Some(inp)) = (&self.record, self.session.input()) else {
+            self.messages = vec!["Open the record's input file first".into()];
+            return;
+        };
+        let (txt, _) = records::companion_paths(&rec.path);
+        let Ok(input_text) = std::fs::read_to_string(&txt) else {
+            self.messages = vec![format!(
+                "No record-input file beside the record ({}): it names the input to re-render",
+                txt.display()
+            )];
+            return;
+        };
+        let prep = match records::prepare(&rec.bytes, &input_text, inp) {
+            Ok(p) => p,
+            Err(e) => {
+                self.messages = vec![e.to_string()];
+                return;
+            }
+        };
+        let mut m = Vec::new();
+        let expected = prep.readout.flags & records::EXPECTED_DIFFER;
+        if expected != 0 {
+            m.push(format!(
+                "The record's flags {}: a differing result is expected",
+                records::flag_names(expected).join(", ")
+            ));
+        }
+        self.messages = m;
+        let progress = Arc::new(AtomicU64::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (p, c, ctx2) = (progress.clone(), cancel.clone(), ctx.clone());
+        let samples = inp.samples.clone();
+        let span = prep.span.clone();
+        let total = span.len() as u64;
+        let digest = prep.readout.recording_digest;
+        std::thread::spawn(move || {
+            let r = records::re_render(&prep.recipe, digest, &samples[span], &p, &c)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(r);
+            ctx2.request_repaint();
+        });
+        self.rerender = Some(ReRenderJob {
+            progress,
+            cancel,
+            total,
+            rx,
+        });
+    }
+
+    fn poll_rerender(&mut self) {
+        let Some(job) = &self.rerender else {
+            return;
+        };
+        if let Ok(r) = job.rx.try_recv() {
+            self.rerender = None;
+            self.messages.push(match r {
+                Ok(o) => format!(
+                    "{}: record {:016x}, re-render {:016x}",
+                    if o.reproduces() {
+                        "Reproduces"
+                    } else {
+                        "Differs"
+                    },
+                    o.expected,
+                    o.digest
+                ),
+                Err(e) => e,
+            });
+        }
+    }
+
     fn live_play_view(&mut self, ui: &mut egui::Ui) {
         use rr_dr60::control_map::ControlReading;
         use rr_dr60::controls::{ControlValue, controls};
@@ -1607,6 +1916,46 @@ impl Workbench {
 
 /// Replays a playback sidecar against the stored form named in it, beside the sidecar (D5),
 /// and reports each check.
+/// Writes item `n`'s processing record and its companions beside `path` (spec 005 D2).
+fn save_record_files(
+    dev: &workbench_core::device::Device,
+    n: u32,
+    input: Option<&workbench_core::input::Input>,
+    path: &std::path::Path,
+) -> String {
+    use workbench_core::records;
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+    let f = match records::files(dev, n, input, &name) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    let (txt, i24) = records::companion_paths(path);
+    let mut written = vec![path.display().to_string(), txt.display().to_string()];
+    let result = std::fs::write(path, &f.record)
+        .and_then(|()| std::fs::write(&txt, &f.input_text))
+        .and_then(|()| match &f.i24 {
+            Some(b) => {
+                written.push(i24.display().to_string());
+                std::fs::write(&i24, b)
+            }
+            None => Ok(()),
+        });
+    match result {
+        Ok(()) => format!(
+            "Saved item {n}'s processing record: {}{}",
+            written.join(", "),
+            if f.i24.is_none() && input.is_some() && dev.run_of(n).is_some() {
+                " (the input is not on the 24-bit grid: it re-renders in the workbench only)"
+            } else {
+                ""
+            }
+        ),
+        Err(e) => format!("{}: {e}", text::OPEN_IO),
+    }
+}
+
 fn replay_messages(path: &std::path::Path) -> Vec<String> {
     use workbench_core::device;
     let result = std::fs::read_to_string(path)

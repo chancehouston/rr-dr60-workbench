@@ -103,7 +103,7 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 42] = [
+const LISTED: [&str; 51] = [
     "start_recording",
     "record_with_changes",
     "stop_recording_with_changes",
@@ -146,6 +146,16 @@ const LISTED: [&str; 42] = [
     "set_control_value",
     "recording_counter",
     "footprint_bytes",
+    // Spec 005 FR-005.
+    "processing_record_len",
+    "processing_record_write",
+    "processing_record_read",
+    "recording_digest_matches",
+    "new_at_counter",
+    "encoding",
+    "record",
+    "set_component",
+    "set_component_parameter",
 ];
 
 /// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).
