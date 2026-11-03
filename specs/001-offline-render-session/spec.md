@@ -4,9 +4,18 @@
 
 **Created**: 2026-11-02
 
-**Status**: Draft. The draft reviews have been applied (coach 1 – 17, hardware B1 – B10), and the result goes to `/speckit-clarify`.
+**Status**: Draft. The draft reviews have been applied (coach 1 – 17, hardware B1 – B10), and `/speckit-clarify` answered four questions (2026-11-02). Awaiting the owner's sign-off.
 
 **Input**: User description: "Feature 001 of docs/workbench-plan.md: the offline render session. Open a mono or multichannel audio file at one of the engine's supported host rates; edit every setting through a panel generated at run time from the engine's control manifest; render it through the default one-pass engine in the background with progress and cancel; play the original and the render with an instant A/B switch at the same position; export the render sample for sample with a sidecar (engine version and pinned commit, host rate, seed, every control value by identifier, the input file's name and digest, the tap) and reopen a sidecar to restore the settings."
+
+## Clarifications
+
+### Session 2026-11-02
+
+- Q: When the user switches between the original and the render, where does playback continue? → A: At the same moment of content through the engine's one-pass map (latency plus the removed pauses); "same seconds" stays an option (D6, FR-010, SC-005 as written).
+- Q: Does a render feed silence after the input so the file's end comes out? → A: Yes, on by default: latency + drain samples of digital silence, labelled, recorded in the sidecar, and the user can turn it off (D7).
+- Q: Are the tap and the component slot editable in 001? → A: Both, like every manifest control; the tap's incompatibility with the route is refused beside both controls (D4, US2 AS4, AS6); the plan of record amended.
+- Q: What makes a reopened sidecar's input "the same"? → A: The digest of the converted engine-input samples; the raw-file digest is shown for information only (D9, FR-014).
 
 ## Decisions for sign-off
 
@@ -22,7 +31,7 @@ Read this section first. Each row gives the recommendation, and the Assumptions 
 | D6 † | **A/B playback.** One transport plays the original or the render, and one key switches between them instantly. **The switch maps the position through the engine's one-pass map**: the engine's latency, plus the input that drop mode removed before that point. The same moment of content is therefore heard in both takes. Raw "same seconds" is an option. The engine publishes the map, so the workbench does no alignment analysis of its own. Nothing is level matched. The monitor volume acts on the output device only. The output device's own rate conversion is the only conversion at the boundary, and the session states it when the rates differ. | **The engine's map by default; same seconds as an option** |
 | D7 † | **The tail.** The one-pass emits each input sample only after the engine's latency, and its output chain then rings on. To bring every input sample out, the session appends **T = latency + drain** samples of digital silence after the input. The tail is on by default, labelled "tail: the engine's latency and drain", recorded in the sidecar, and can be turned off. | **Tail on by default** |
 | D8 † | **The export.** A 32-bit float mono WAV at the file's rate holds the engine's output samples unaltered. A **sidecar** with the same name is written beside it: a versioned, human-readable text file holding the workbench version; the engine version and full commit; the host rate; the seed; the recording counter (0, a fresh engine); the tail length; the block size; the channel choice; the conversion rule's version; every control by identifier, with its value as the engine reads it back; the component slot and its parameters; the input file's name, length, a digest of the raw file and a digest of the converted engine input; and the render's length, latency, gate events, samples removed, peak and a digest of the output. | **WAV f32 + a versioned text sidecar** |
-| D9 † | **Reopening a sidecar.** Opening a sidecar restores every value it holds. With the same converted-input digest, channel and engine commit, the next render reproduces the export bit for bit. The session lists each difference: a different engine commit (the render may then differ), an unknown identifier (skipped), a control the engine has that the sidecar lacks (left at its default), a value the engine refuses (that control left unchanged), and a different input digest. | **Restore, with every difference listed** |
+| D9 † | **Reopening a sidecar.** Opening a sidecar restores every value it holds. With the same converted-input digest, channel and engine commit, the next render reproduces the export bit for bit. The session lists each difference: a different engine commit (the render may then differ), an unknown identifier (skipped), a control the engine has that the sidecar lacks (left at its default), a value the engine refuses (that control left unchanged), and a different converted-input digest (the raw-file digest is shown for information only). | **Restore, with every difference listed** |
 | D10 | **Sessions.** One session per window, with one file and one current render. Several renders, presets and history are feature 005. | **One file, one render** |
 
 ## User Scenarios & Testing *(mandatory)*
