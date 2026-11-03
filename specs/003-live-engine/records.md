@@ -47,3 +47,7 @@ The 64-frame figure is tight by design. Each engine call is a whole 10 ms chunk,
 13. D7: every field with its reach rule (D6 restated as a list).
 14. Unknown change identifiers listed, with no range set.
 15. Records and the label.
+
+## Convergence
+
+`/speckit-converge` (2026-11-02) checked 11 FRs, 5 SCs, 10 acceptance scenarios, 7 edge cases, D1 – D9, P1 – P6 and the six principles against the code and the tests, and found no gap: ✅ converged. SC-003's audible half and SC-005 are the owner's desk checklist.
