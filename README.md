@@ -38,7 +38,19 @@ assumptions; nothing has been checked against a real unit (see the engine's READ
 - **The timeline**: the change log, the gate's reports and the skips.
 - **Reproduction**: every live take reproduces bit for bit from its version-2 sidecar.
 
-Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): the record and play paths, processing records and comparisons, and the microphone (007).
+**Feature 004, the record and play paths:** a persistent device with its memory. Record the input with record-side changes; list, erase, export and import items; play an item to a take with the playback controls and scheduled changes. A playback sidecar replays the take bit for bit.
+
+**Feature 004b, live playback:** play an item live, on a copy of the device in the output callback. The playback controls and the stage switches change at once.
+
+**Feature 005, processing records:** save the engine's processing record of a recording, with a record-input file (and the fed span as 24-bit samples when exact). Open a record, with every field and flag and a settings diff against the panel. Check it against an item, and re-render it from its input to the same digest.
+
+**Feature 005b, comparisons and presets:** keep a render as B. The Compare tab shows a parameter diff, a null test (latency-aligned or at sample 0) and a spectral difference B ÷ A. B is a third A/B take. Presets save and load the panel's values.
+
+**Feature 007, the microphone:** capture from the Mac's default input with the engine in the input callback. The take is reopened over its captured input, and monitoring is off by default.
+
+**Feature 006, the coverage close-out:** every public engine method reachable (70/70, asserted). The Session tab checks the call forms, and so does each device item. The Tour tab steps through the stages, with "compare without this stage".
+
+The plan of record ([docs/workbench-plan.md](docs/workbench-plan.md)) is complete.
 
 ## Build and run
 
@@ -46,6 +58,14 @@ Requires Rust stable (edition 2024). The engine is fetched from GitHub at a pinn
 
 ```sh
 cargo run --release -p rr_dr60_workbench
+```
+
+The device check (silent playback and live checks; `--capture` adds one second from the default
+input, which needs the microphone permission):
+
+```sh
+cargo run -p rr_dr60_workbench --bin playback_check
+cargo run -p rr_dr60_workbench --bin playback_check -- --capture
 ```
 
 macOS is the first target. Rendering and export are portable; playback uses CoreAudio and is
