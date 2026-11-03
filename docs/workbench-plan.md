@@ -20,7 +20,7 @@ methods and 15 stages. The shell lists the control manifest read-only.
 | 005 | **Processing records** | Write, read and re-render processing records (spec 020). | 004 |
 | 005b | **Comparisons and presets** (split from 005, 2026-11-03) | Two renders side by side with a null test, a spectral difference and a parameter diff. Settings presets saved as files. | 001, 002 |
 | 007 | **The Mac's microphone as the input** (deferred from 003) | An input device as the source, the engine run in the input callback so the input clock drives it (no drift gaps), the take keeping the captured input; acoustic feedback and capture digests handled. | 003 |
-| 006 | **Coverage close-out** | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005b |
+| 006 | **Coverage close-out** (done 2026-11-03: 70/70) | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005b |
 
 ## Standing rules
 
