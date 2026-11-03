@@ -200,6 +200,28 @@ impl Session {
         self.accept_live(take, at_stop)
     }
 
+    /// Hands a finished capture's take to the session (spec 007 D5, coach review 3): opens the
+    /// capture file (which replaces the open file and drops its render, B and a restored range),
+    /// sets the panel to the take's start values and the tail off, and accepts the take as 003's
+    /// live take: the panel then holds its end values and the take is not stale.
+    ///
+    /// # Errors
+    ///
+    /// The capture file's refusal; `false` inside when the take is not this file's.
+    pub fn accept_capture(&mut self, path: &Path, take: Render) -> Result<bool, OpenError> {
+        self.open(path, Channel::Index(0))?;
+        let start: Vec<(u32, rr_dr60::control_map::ControlReading)> = (0
+            ..rr_dr60::controls::controls().len() as u32)
+            .filter_map(|i| crate::analysis::compare::reading(&take.request, i).map(|r| (i, r)))
+            .collect();
+        if let Some(p) = self.panel.as_mut() {
+            p.set_many(&start);
+        }
+        self.tail = false;
+        self.range = None;
+        Ok(self.accept_live_take(take))
+    }
+
     /// Accepts a finished live take with a given request at the stop, against which its staleness
     /// is judged.
     pub fn accept_live(&mut self, take: Render, at_stop: RenderRequest) -> bool {

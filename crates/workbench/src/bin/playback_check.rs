@@ -2,6 +2,9 @@
 //! with the monitor volume at 0 for half a second each and reports how far the callback moved
 //! and the overload count. `cargo run -p rr_dr60_workbench --bin playback_check`.
 
+#[path = "../capture.rs"]
+#[allow(dead_code)]
+mod capture;
 #[path = "../playback.rs"]
 mod playback;
 
@@ -11,6 +14,12 @@ use std::sync::atomic::Ordering;
 use workbench_core::monitor::{Shared, Take, Takes};
 
 fn main() {
+    // Spec 007 FR-007: the capture case needs the microphone permission, so it runs only when
+    // asked: `--capture`.
+    if std::env::args().any(|a| a == "--capture") {
+        capture_check();
+        return;
+    }
     for rate in [6000u32, 48000] {
         let take: Arc<[f32]> = Arc::from(vec![0.1f32; rate as usize * 2]);
         let shared = Arc::new(Shared::default());
@@ -104,4 +113,62 @@ fn live_check() {
         rate / 2,
         p.device_lost()
     );
+}
+
+/// Captures one second from the default input with monitoring off and reports the device, the
+/// fed count, digital silence and whether the take reproduces offline (spec 007 FR-007).
+fn capture_check() {
+    use workbench_core::capture::{GapCounter, SilenceWatch, rate_refusal};
+    use workbench_core::input::Channel;
+    use workbench_core::live::{LiveCore, TakeBuilder, capture_start_request};
+    let dev = match capture::default_input() {
+        Ok(d) => d,
+        Err(e) => {
+            println!("capture: {e}");
+            return;
+        }
+    };
+    println!(
+        "capture: {} at {} Hz, {} channels",
+        dev.name, dev.rate, dev.channels
+    );
+    if let Some(why) = rate_refusal(dev.rate) {
+        println!("capture: {why}");
+        return;
+    }
+    let rate = dev.rate as u32;
+    let (req, _) = capture_start_request(None, rate).expect("a panel");
+    let (core, mut q) =
+        LiveCore::new_capture(&req, &[], dev.channels, Channel::Index(0), false).expect("core");
+    let gaps = Arc::new(GapCounter::default());
+    let c = capture::Capture::start(dev, core, gaps.clone()).expect("start");
+    // 1.5 s, so a full second is fed after the start-up (coach review 6).
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    drop(c);
+    let mut b = TakeBuilder::default();
+    b.drain(&mut q);
+    let mut w = SilenceWatch::new(rate);
+    w.observe(&b.captured);
+    let fed = b.captured.len();
+    let take_req = b.capture_request(&req);
+    let take = b.finish(&take_req, &q.state).expect("finish");
+    let offline = workbench_core::render::render(
+        &take.request,
+        &std::sync::atomic::AtomicU64::new(0),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .expect("render")
+    .expect("not cancelled");
+    println!(
+        "capture: fed {fed} in 1.5 s (about {}), gaps {}, digital silence {}, incomplete {}, reproduces offline {}",
+        rate as usize * 3 / 2,
+        gaps.gaps.load(Ordering::Relaxed),
+        w.silent() || (fed > 0 && b_all_zero(&take.request.input)),
+        q.state.incomplete.load(Ordering::Relaxed),
+        offline.output_sha256 == take.output_sha256
+    );
+}
+
+fn b_all_zero(x: &[f32]) -> bool {
+    x.iter().all(|v| *v == 0.0)
 }

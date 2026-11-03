@@ -63,6 +63,15 @@ pub struct LiveState {
     pub drained: AtomicBool,
     /// Replies lost to a full reply queue (they do not affect the take; B9).
     pub replies_lost: AtomicU64,
+    /// Monitor samples dropped on a full monitor queue (spec 007 D4; never the take's).
+    pub monitor_drops: AtomicU64,
+    /// Monitor samples dropped above the latency ceiling (`capture::monitor_fill`; review B7).
+    pub monitor_ceiling_drops: AtomicU64,
+    /// Samples staged and not yet fed (spec 007 D5, coach review 2: reported at the stop).
+    pub staged: AtomicU64,
+    /// The gate is paused after the last chunk (spec 007 review Q8: a paused gate emits nothing,
+    /// so the monitor's empty queue is not an underrun then).
+    pub paused: AtomicBool,
 }
 
 /// The UI's ends of the queues.
@@ -83,6 +92,95 @@ pub struct LiveQueues {
     pub skips: Consumer<(u64, u64)>,
     /// The counters.
     pub state: Arc<LiveState>,
+    /// A capture's fed input (spec 007 D2; `None` for a file).
+    pub captured: Option<Consumer<f32>>,
+    /// A capture's monitor samples, for the output callback (spec 007 D4).
+    pub monitor: Option<Consumer<f32>>,
+}
+
+/// A capture's part of the core (spec 007 D1, D2).
+struct Capture {
+    /// Samples staged for the next chunk.
+    staged: usize,
+    /// The device's channels per frame.
+    channels: usize,
+    /// The channel used.
+    channel: crate::input::Channel,
+    /// The fed input, for the take.
+    captured: Producer<f32>,
+    /// The engine's output for the monitor (`None`: monitoring off).
+    monitor: Option<Producer<f32>>,
+}
+
+/// The capture's file: a 32-bit float WAV (spec 007 D5); its decoding is the identity.
+///
+/// # Errors
+///
+/// Past the WAV format's size limit (the capture stops before it: coach review 11).
+pub fn capture_wav(captured: &[f32], rate_hz: u32) -> Result<Vec<u8>, crate::export::ExportError> {
+    crate::export::wav_bytes(captured, rate_hz)
+}
+
+pub use crate::input::mix_frame;
+
+/// The start request of a capture at the device's `rate` (spec 007 D3): `panel`'s values when its
+/// rate is the device's, otherwise a default panel's, with the note that says so. The input is
+/// empty, the start 0, the tail off.
+///
+/// # Errors
+///
+/// No panel can be made at `rate` (not a host rate).
+pub fn capture_start_request(
+    panel: Option<&crate::panel::Panel>,
+    rate: u32,
+) -> Result<(RenderRequest, Option<String>), Error> {
+    let fallback;
+    let (p, note) = match panel {
+        Some(p) if p.rate_hz() == rate => (p, None),
+        other => {
+            fallback = crate::panel::Panel::new(rate)?;
+            let note = other.map_or_else(
+                || format!("No file is open: the capture uses the engine's defaults at {rate} Hz"),
+                |p| {
+                    format!(
+                        "The panel is at {} Hz and the input device at {rate} Hz: the capture uses the engine's defaults at {rate} Hz",
+                        p.rate_hz()
+                    )
+                },
+            );
+            (&fallback, Some(note))
+        }
+    };
+    let (settings, engine_values) = p.snapshot();
+    let input: Arc<[f32]> = Arc::from(Vec::new());
+    let sha = crate::input::samples_sha256(&input);
+    Ok((
+        RenderRequest {
+            input_sha256: sha,
+            file_name: "capture".into(),
+            frames: 0,
+            raw_sha256: sha,
+            rate_hz: rate,
+            input,
+            channel: crate::input::Channel::Index(0),
+            settings,
+            engine_values,
+            tail: false,
+            block: render::block_for(rate),
+            start: 0,
+            len: None,
+            changes: Vec::new(),
+        },
+        note,
+    ))
+}
+
+/// The monitor queue's capacity (spec 007 D4, reviews Q8, B1): about 100 ms plus the fill's
+/// widest margin.
+pub fn monitor_capacity(rate_hz: u32) -> usize {
+    // The fill's widest ceiling (two output buffers of MAX_PART, an input burst, two blocks)
+    // above 100 ms (hardware review B1).
+    rate_hz as usize / 10 + 4 * MAX_PART + 2 * (rate_hz as usize / 100)
 }
 
 /// The audio thread's core.
@@ -111,6 +209,7 @@ pub struct LiveCore {
     state: Arc<LiveState>,
     produced: u64,
     failed: bool,
+    capture: Option<Capture>,
 }
 
 /// A converted control value for `schedule_change`.
@@ -220,6 +319,7 @@ impl LiveCore {
             state: state.clone(),
             produced: 0,
             failed: false,
+            capture: None,
         };
         if core.rows.push(rest).is_err() {
             core.state.incomplete.store(true, Ordering::Relaxed);
@@ -235,8 +335,116 @@ impl LiveCore {
                 rows: mc,
                 skips: kc,
                 state,
+                captured: None,
+                monitor: None,
             },
         ))
+    }
+
+    /// Builds the core for a capture (spec 007 D2): `req` at the device's rate with the panel's
+    /// values, an empty input, start 0 and the tail off; frames of `channels` interleaved
+    /// samples, of which `channel` (or the mix) is fed. The queues hold about 10 s of the UI's
+    /// stall; with `monitor`, a monitor queue of [`monitor_capacity`] (about 100 ms plus two
+    /// device buffers).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the settings or values.
+    pub fn new_capture(
+        req: &RenderRequest,
+        list: &[(Clock, u64, u32, f64)],
+        channels: usize,
+        channel: crate::input::Channel,
+        monitor: bool,
+    ) -> Result<(Self, LiveQueues), Error> {
+        let mut r = req.clone();
+        r.input = Arc::from(Vec::new());
+        r.start = 0;
+        r.tail = false;
+        r.len = None;
+        let (mut core, mut q) = Self::new(&r, list)?;
+        core.end = u64::MAX;
+        // The take's queues for about 10 s (spec 007 D7): ten seconds of chunks.
+        let per_second = (req.rate_hz as usize).div_ceil(core.block);
+        let ten = 10 * per_second + 2 * MAX_PART.div_ceil(core.block) + 2;
+        let (sp, sc) = RingBuffer::new(10 * req.rate_hz as usize + 2 * MAX_PART);
+        let (ep, ec) = RingBuffer::new(ten * core.ebuf.len());
+        let (lp, lc) = RingBuffer::new(ten * MAX_CHANGES_PER_CALL.min(8) + MAX_CHANGES_PER_CALL);
+        let (mp, mc) = RingBuffer::new(ten + 1);
+        let (cp, cc) = RingBuffer::new(10 * req.rate_hz as usize + 2 * MAX_PART);
+        // The rest row, again, into the new rows queue.
+        let rest = MeterRow {
+            meters: core.p.rest_meters(),
+            in_span: (0, 0),
+            out_span: (0, 0),
+            tail: false,
+        };
+        core.samples = sp;
+        core.events = ep;
+        core.log = lp;
+        core.rows = mp;
+        q.samples = sc;
+        q.events = ec;
+        q.log = lc;
+        q.rows = mc;
+        if core.rows.push(rest).is_err() {
+            core.mark_incomplete();
+        }
+        let (monitor_p, monitor_c) = if monitor {
+            // A small queue (review Q8): about 100 ms plus two of the largest callbacks.
+            let (a, b) = RingBuffer::new(monitor_capacity(req.rate_hz));
+            (Some(a), Some(b))
+        } else {
+            (None, None)
+        };
+        core.capture = Some(Capture {
+            staged: 0,
+            channels: channels.max(1),
+            channel,
+            captured: cp,
+            monitor: monitor_p,
+        });
+        q.captured = Some(cc);
+        q.monitor = monitor_c;
+        Ok((core, q))
+    }
+
+    /// The input callback's body (spec 007 D2): converts `interleaved` frames to the engine's
+    /// input (the channel, or the mix), stages them, and runs every whole 10 ms chunk. Real-time
+    /// safe. A trailing part frame (not a multiple of the channels) is ignored.
+    pub fn push(&mut self, interleaved: &[f32]) {
+        self.take_commands();
+        let Some(ch) = self.capture.as_ref().map(|c| c.channels) else {
+            return;
+        };
+        for frame in interleaved.chunks_exact(ch) {
+            if self.failed {
+                return;
+            }
+            let v = match self.capture.as_ref().map(|c| c.channel) {
+                Some(crate::input::Channel::Index(i)) => {
+                    frame.get(usize::from(i)).copied().unwrap_or(0.0)
+                }
+                _ => mix_frame(frame),
+            };
+            let Some(c) = self.capture.as_mut() else {
+                return;
+            };
+            self.ibuf[c.staged] = v;
+            c.staged += 1;
+            if c.staged == self.block {
+                c.staged = 0;
+                self.feed_chunk(self.block);
+            }
+        }
+        self.state
+            .staged
+            .store(self.staged() as u64, Ordering::Relaxed);
+    }
+
+    /// The samples staged and not yet fed (spec 007 D5: not fed at the stop).
+    pub fn staged(&self) -> usize {
+        self.capture.as_ref().map_or(0, |c| c.staged)
     }
 
     fn mark_incomplete(&self) {
@@ -280,7 +488,7 @@ impl LiveCore {
         }
     }
 
-    /// Runs one chunk and sends its results.
+    /// Runs one chunk of the file and sends its results.
     fn chunk(&mut self) {
         let n = (self.end - self.pos).min(self.block as u64) as usize;
         let start = self.base + self.pos as usize;
@@ -289,6 +497,12 @@ impl LiveCore {
             self.ibuf[..have].copy_from_slice(&self.input[start..start + have]);
         }
         self.ibuf[have..n].fill(0.0);
+        self.feed_chunk(n);
+    }
+
+    /// Runs the engine on `ibuf[..n]` and sends its results: to the FIFO (a file) or to the
+    /// monitor queue (a capture), and to the take's queues.
+    fn feed_chunk(&mut self, n: usize) {
         let replies = &mut self.replies;
         let state = &self.state;
         let list = &self.list;
@@ -343,11 +557,30 @@ impl LiveCore {
             self.mark_incomplete();
         }
         let out0 = self.produced;
-        for &v in &self.obuf[..info.produced] {
-            self.fifo.push_back(v);
-            if self.samples.push(v).is_err() {
-                self.mark_incomplete();
+        let mut incomplete = false;
+        match self.capture.as_mut() {
+            None => {
+                for &v in &self.obuf[..info.produced] {
+                    self.fifo.push_back(v);
+                    incomplete |= self.samples.push(v).is_err();
+                }
             }
+            Some(c) => {
+                for &v in &self.obuf[..info.produced] {
+                    incomplete |= self.samples.push(v).is_err();
+                    if let Some(m) = c.monitor.as_mut()
+                        && m.push(v).is_err()
+                    {
+                        self.state.monitor_drops.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for &v in &self.ibuf[..n] {
+                    incomplete |= c.captured.push(v).is_err();
+                }
+            }
+        }
+        if incomplete {
+            self.mark_incomplete();
         }
         self.produced += info.produced as u64;
         for &e in &self.ebuf[..info.events.min(self.ebuf.len())] {
@@ -365,11 +598,12 @@ impl LiveCore {
             meters: Pipeline::meters(&self.p),
             in_span: (self.pos, self.pos + n as u64),
             out_span: (out0, self.produced),
-            tail: self.pos >= avail && n > 0,
+            tail: self.capture.is_none() && self.pos >= avail && n > 0,
         };
         if self.rows.push(row).is_err() {
             self.mark_incomplete();
         }
+        self.state.paused.store(info.paused, Ordering::Relaxed);
         self.pos += n as u64;
         self.state.fed.store(self.pos, Ordering::Relaxed);
         self.state.produced.store(self.produced, Ordering::Relaxed);
@@ -444,6 +678,8 @@ pub struct TakeBuilder {
     pub skips: Vec<(u64, u64)>,
     /// The commands' results.
     pub replies: Vec<Reply>,
+    /// A capture's fed input (spec 007 D5).
+    pub captured: Vec<f32>,
 }
 
 impl TakeBuilder {
@@ -467,6 +703,32 @@ impl TakeBuilder {
         while let Ok(v) = q.replies.pop() {
             self.replies.push(v);
         }
+        if let Some(c) = q.captured.as_mut() {
+            while let Ok(v) = c.pop() {
+                self.captured.push(v);
+            }
+        }
+    }
+
+    /// The request of a capture's take (spec 007 D5): the start's request with the captured
+    /// input, from 0, its digests, the tail off. The raw digest is that of the capture's 32-bit
+    /// float WAV ([`capture_wav`]), so the session accepts the take once it opens that file.
+    pub fn capture_request(&self, start_req: &RenderRequest) -> RenderRequest {
+        let mut r = start_req.clone();
+        r.input = Arc::from(self.captured.clone());
+        r.input_sha256 = crate::input::samples_sha256(&self.captured);
+        r.raw_sha256 = crate::records::sha256(
+            &capture_wav(&self.captured, start_req.rate_hz).unwrap_or_default(),
+        );
+        r.frames = self.captured.len() as u64;
+        r.file_name = "capture".into();
+        // The capture file is mono: channel 1 (coach review 2).
+        r.channel = crate::input::Channel::Index(0);
+        r.start = 0;
+        r.len = None;
+        r.tail = false;
+        r.changes = Vec::new();
+        r
     }
 
     /// The take as the session's render (D5): its request is the start's request with the

@@ -187,6 +187,14 @@ pub fn mix_floats(channels: &[&[f32]]) -> Vec<f32> {
         .collect()
 }
 
+/// One frame's float mix (spec 007 D1): exactly [`mix_floats`]'s rule on one frame, the same
+/// `Iterator::sum` in channel order (its neutral element keeps an all-−0.0 frame at −0.0;
+/// review Q3), divided in f64, rounded to f32. Real-time safe.
+pub fn mix_frame(frame: &[f32]) -> f32 {
+    let sum: f64 = frame.iter().map(|&v| f64::from(v)).sum();
+    (sum / frame.len() as f64) as f32
+}
+
 /// SHA-256 of samples as f32 little-endian bytes (R-11).
 pub fn samples_sha256(samples: &[f32]) -> [u8; 32] {
     let mut h = Sha256::new();
