@@ -207,25 +207,59 @@ pub fn hex(d: &[u8; 32]) -> String {
 ///
 /// Every refusal of FR-001, a missing channel, and read or decode failures.
 pub fn open(path: &Path, channel: Channel) -> Result<Input, OpenError> {
-    let bytes = fs::read(path).map_err(|e| OpenError::Io(e.to_string()))?;
+    use std::io::Read;
+    let io = |e: std::io::Error| OpenError::Io(e.to_string());
     let file_name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    open_bytes(&file_name, bytes, channel)
+    // The raw digest in a streaming pass, and the first bytes for the container (convergence
+    // T038: no whole-file buffer).
+    let mut f = fs::File::open(path).map_err(io)?;
+    let mut h = Sha256::new();
+    let mut head = Vec::with_capacity(12);
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        if head.len() < 12 {
+            let take = (12 - head.len()).min(n);
+            head.extend_from_slice(&buf[..take]);
+        }
+        h.update(&buf[..n]);
+    }
+    let raw_sha256: [u8; 32] = h.finalize().into();
+    let file = fs::File::open(path).map_err(io)?;
+    decode(&file_name, Box::new(file), &head, raw_sha256, channel)
 }
 
-/// Opens in-memory file bytes (the tests' entry point; [`open`] reads the file and calls this).
+/// Opens in-memory file bytes (the tests' entry point).
 ///
 /// # Errors
 ///
 /// As [`open`].
 pub fn open_bytes(file_name: &str, bytes: Vec<u8>, channel: Channel) -> Result<Input, OpenError> {
     let raw_sha256: [u8; 32] = Sha256::digest(&bytes).into();
-    let format = sniff(&bytes)?;
-    let mss = MediaSourceStream::new(
+    let head = bytes.get(..12).unwrap_or(&bytes).to_vec();
+    decode(
+        file_name,
         Box::new(Cursor::new(bytes)),
-        MediaSourceStreamOptions::default(),
-    );
+        &head,
+        raw_sha256,
+        channel,
+    )
+}
+
+fn decode(
+    file_name: &str,
+    source: Box<dyn symphonia::core::io::MediaSource>,
+    head: &[u8],
+    raw_sha256: [u8; 32],
+    channel: Channel,
+) -> Result<Input, OpenError> {
+    let format = sniff(head)?;
+    let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
     let mut reader = symphonia::default::get_probe()
         .probe(
             &Hint::new(),
@@ -238,6 +272,7 @@ pub fn open_bytes(file_name: &str, bytes: Vec<u8>, channel: Channel) -> Result<I
         .default_track(TrackType::Audio)
         .ok_or_else(|| OpenError::UnsupportedFormat("no audio track".into()))?;
     let track_id = track.id;
+    let reserve = track.num_frames.unwrap_or(0).min(1 << 31) as usize;
     let Some(CodecParameters::Audio(params)) = track.codec_params.clone() else {
         return Err(OpenError::UnsupportedFormat("no audio parameters".into()));
     };
@@ -262,8 +297,7 @@ pub fn open_bytes(file_name: &str, bytes: Vec<u8>, channel: Channel) -> Result<I
         .make_audio_decoder(&params, &AudioDecoderOptions::default())
         .map_err(|e| OpenError::UnsupportedFormat(e.to_string()))?;
 
-    let mut acc = Accumulator::new(channel, channels);
-    let mut sample_type = None;
+    let mut acc = Accumulator::new(channel, channels, reserve);
     while let Some(packet) = reader
         .next_packet()
         .map_err(|e| OpenError::Decode(e.to_string()))?
@@ -274,18 +308,14 @@ pub fn open_bytes(file_name: &str, bytes: Vec<u8>, channel: Channel) -> Result<I
         let buf = decoder
             .decode(&packet)
             .map_err(|e| OpenError::Decode(e.to_string()))?;
-        let st = acc.push(buf, bits, format)?;
-        if sample_type.is_some_and(|t| t != st) {
-            return Err(OpenError::Decode("sample type changed mid-stream".into()));
-        }
-        sample_type = Some(st);
+        acc.push(buf, bits, format)?;
     }
-    let sample_type = match sample_type {
+    let sample_type = match acc.sample_type {
         Some(t) => t,
         None => empty_type(bits, format)?,
     };
     let frames = acc.frames;
-    let samples: Arc<[f32]> = acc.finish(sample_type).into();
+    let samples: Arc<[f32]> = acc.out.into();
     let input_sha256 = samples_sha256(&samples);
     let non_finite = samples.iter().filter(|s| !s.is_finite()).count() as u64;
     let subnormal = samples.iter().filter(|s| s.is_subnormal()).count() as u64;
@@ -336,17 +366,19 @@ fn empty_type(bits: Option<u32>, format: Format) -> Result<SampleType, OpenError
     }
 }
 
-/// Collects the selected channel (or every channel for the mix) as integers or floats.
+/// Converts each decoded packet straight into the engine's input (convergence T038): one f32
+/// output, packet-sized temporaries only; the mix is summed per packet.
 struct Accumulator {
     channel: Channel,
     channels: u16,
-    ints: Vec<Vec<i32>>,
-    floats: Vec<Vec<f32>>,
+    out: Vec<f32>,
     frames: u64,
+    sample_type: Option<SampleType>,
+    ints: Vec<Vec<i32>>,
 }
 
 impl Accumulator {
-    fn new(channel: Channel, channels: u16) -> Self {
+    fn new(channel: Channel, channels: u16, reserve: usize) -> Self {
         let n = match channel {
             Channel::Index(_) => 1,
             Channel::Mix => usize::from(channels),
@@ -354,9 +386,10 @@ impl Accumulator {
         Self {
             channel,
             channels,
-            ints: vec![Vec::new(); n],
-            floats: vec![Vec::new(); n],
+            out: Vec::with_capacity(reserve),
             frames: 0,
+            sample_type: None,
+            ints: vec![Vec::new(); n],
         }
     }
 
@@ -367,29 +400,40 @@ impl Accumulator {
         }
     }
 
-    /// Takes one decoded buffer; returns its routed sample type.
+    fn set_type(&mut self, st: SampleType) -> Result<(), OpenError> {
+        if self.sample_type.is_some_and(|t| t != st) {
+            return Err(OpenError::Decode("sample type changed mid-stream".into()));
+        }
+        self.sample_type = Some(st);
+        Ok(())
+    }
+
+    /// Takes one decoded buffer.
     fn push(
         &mut self,
         buf: GenericAudioBufferRef<'_>,
         bits: Option<u32>,
         format: Format,
-    ) -> Result<SampleType, OpenError> {
+    ) -> Result<(), OpenError> {
         let wanted = self.wanted();
-        let frames = match &buf {
+        for v in &mut self.ints {
+            v.clear();
+        }
+        let (frames, st) = match &buf {
             GenericAudioBufferRef::S16(b) => {
+                check_bits(bits, 16)?;
                 for (k, &c) in wanted.iter().enumerate() {
                     let p = b.plane(c).unwrap_or(&[]);
                     self.ints[k].extend(p.iter().map(|&s| i32::from(s)));
                 }
-                check_bits(bits, 16)?;
                 (b.frames(), SampleType::I16)
             }
             GenericAudioBufferRef::S24(b) => {
+                check_bits(bits, 24)?;
                 for (k, &c) in wanted.iter().enumerate() {
                     let p = b.plane(c).unwrap_or(&[]);
                     self.ints[k].extend(p.iter().map(|s| s.inner()));
                 }
-                check_bits(bits, 24)?;
                 (b.frames(), SampleType::I24)
             }
             GenericAudioBufferRef::S32(b) => {
@@ -420,11 +464,17 @@ impl Accumulator {
                 (b.frames(), st)
             }
             GenericAudioBufferRef::F32(b) => {
-                for (k, &c) in wanted.iter().enumerate() {
-                    let p = b.plane(c).unwrap_or(&[]);
-                    self.floats[k].extend_from_slice(p);
+                self.set_type(SampleType::F32)?;
+                if self.channel == Channel::Mix {
+                    let planes: Vec<&[f32]> =
+                        wanted.iter().map(|&c| b.plane(c).unwrap_or(&[])).collect();
+                    self.out.extend(mix_floats(&planes));
+                } else {
+                    self.out
+                        .extend_from_slice(b.plane(wanted[0]).unwrap_or(&[]));
                 }
-                (b.frames(), SampleType::F32)
+                self.frames += b.frames() as u64;
+                return Ok(());
             }
             GenericAudioBufferRef::U8(_) | GenericAudioBufferRef::S8(_) => {
                 return Err(OpenError::UnsupportedSampleType("8-bit".into()));
@@ -436,40 +486,31 @@ impl Accumulator {
                 return Err(OpenError::UnsupportedSampleType("unsigned or other".into()));
             }
         };
-        self.frames += frames.0 as u64;
-        Ok(frames.1)
-    }
-
-    fn finish(self, st: SampleType) -> Vec<f32> {
+        self.set_type(st)?;
+        self.frames += frames as u64;
         let scale = match st {
             SampleType::I16 => 32768.0,
             SampleType::I24 => 8_388_608.0,
-            SampleType::I32 => 2_147_483_648.0,
-            SampleType::F32 => 1.0,
+            _ => 2_147_483_648.0,
         };
-        if st == SampleType::F32 {
-            if self.channel == Channel::Mix {
-                let refs: Vec<&[f32]> = self.floats.iter().map(Vec::as_slice).collect();
-                return mix_floats(&refs);
-            }
-            return self.floats.into_iter().next().unwrap_or_default();
-        }
         if self.channel == Channel::Mix {
             let refs: Vec<&[i32]> = self.ints.iter().map(Vec::as_slice).collect();
-            return mix_integers(&refs, scale);
+            self.out.extend(mix_integers(&refs, scale));
+            return Ok(());
         }
-        let src = self.ints.into_iter().next().unwrap_or_default();
-        let mut out = vec![0.0f32; src.len()];
+        let src = &self.ints[0];
+        let start = self.out.len();
+        self.out.resize(start + src.len(), 0.0);
+        let dst = &mut self.out[start..];
         match st {
             SampleType::I16 => {
                 let narrow: Vec<i16> = src.iter().map(|&s| s as i16).collect();
-                convert_i16(&narrow, &mut out);
+                convert_i16(&narrow, dst);
             }
-            SampleType::I24 => convert_i24(&src, &mut out),
-            SampleType::I32 => convert_i32(&src, &mut out),
-            SampleType::F32 => unreachable!(),
+            SampleType::I24 => convert_i24(src, dst),
+            _ => convert_i32(src, dst),
         }
-        out
+        Ok(())
     }
 }
 

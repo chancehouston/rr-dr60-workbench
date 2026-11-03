@@ -67,3 +67,9 @@ The owner's autopilot rule (2026-11-02) puts every review default in force. The 
 6. A restore sets every value, then checks once.
 7. The 20-in-24 refusal is pinned to `UnsupportedSampleType`, the mix doc is reworded, and `convert_i16` is reused.
 8. The headroom hint.
+
+## Convergence
+
+`/speckit-converge` found one partial gap, F1: a long file's memory bound. `input::open` read the whole file and built `i32` copies before converting.
+
+T038 closes it. The raw digest is now computed in a streaming pass, the decoder reads the file through symphonia's `File` source, each packet is converted straight into the single f32 output (the mix is summed per packet), and the output is reserved from the track's frame count. The 54 tests are green unchanged.

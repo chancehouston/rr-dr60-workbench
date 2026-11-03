@@ -217,3 +217,7 @@ description: "Tasks for feature 001, the offline render session"
 MVP first: Phases 1 – 3 give a usable render-and-listen tool with the defaults. Then US2 makes it a
 tuning tool, and US3 makes its findings reproducible. Each checkpoint runs the story's tests and the
 matching desk steps. The owner runs the whole desk checklist before merging.
+
+## Phase 7: Convergence
+
+- [X] T038 Decode by streaming from the file (no whole-file buffer), convert each packet straight to f32 (the mix summed per packet in i64/f64), and compute the raw SHA-256 in a streaming pass, so a long file stays within the three-copy bound, in `crates/workbench_core/src/input.rs`, per edge case "a very long file" and plan R-15 (partial)
