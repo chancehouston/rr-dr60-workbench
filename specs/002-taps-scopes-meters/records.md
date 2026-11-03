@@ -63,3 +63,7 @@ Recorded on 2026-11-02 on the development Mac, with the engine at `a06318c`.
 8. The `limiter_input_peak` note at after_mic_amp.
 9. Reach at three rates, with the confounds separated.
 10. The noise wording.
+
+## Convergence
+
+`/speckit-converge` (2026-11-02) checked 13 FRs, 6 SCs, 14 acceptance scenarios, 7 edge cases, D1 – D12, P1 – P6 and the six principles against the code and the tests, and found no gap: ✅ converged. SC-006 is the owner's desk checklist.
