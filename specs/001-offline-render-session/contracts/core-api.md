@@ -13,7 +13,8 @@ pub mod input {
 pub mod panel {
     pub struct Panel { /* rows, settings, check engine */ }
     impl Panel {
-        pub fn new(rate_hz: u32) -> Result<Self, rr_dr60::Error>;
+        pub fn new(rate_hz: u32) -> Result<Self, rr_dr60::Error>;            // = from_entries(controls(), rate)
+        pub fn from_entries(e: &[ControlEntry], rate_hz: u32) -> Result<Self, rr_dr60::Error>;
         pub fn rows(&self) -> &[ControlRow];
         pub fn set(&mut self, index: u32, value: ControlReading);
         pub fn reset_to_defaults(&mut self);
@@ -30,7 +31,8 @@ pub mod ab {
     pub fn to_original(o: u64, r: &Render, mode: AbMode, input_len: u64) -> u64;
 }
 pub mod export {
-    pub fn export(dir_stem: &Path, input: &Input, render: &Render) -> Result<(), ExportError>;
+    pub trait ExportFs { /* create, write, flush, rename, remove: injectable failures */ }
+    pub fn export(fs: &mut impl ExportFs, stem: &Path, input: &Input, render: &Render) -> Result<(), ExportError>;
 }
 pub mod sidecar {
     pub fn write(input: &Input, render: &Render) -> String;
@@ -39,8 +41,9 @@ pub mod sidecar {
 }
 pub mod monitor {
     pub struct Shared; pub struct Takes;
-    pub fn fill(takes: &Takes, shared: &Shared, out: &mut [f32]); // real-time safe
+    pub fn fill(takes: &Takes, shared: &Shared, left: &mut [f32], right: &mut [f32]); // real-time safe, same samples to both
 }
 pub mod text;                                                    // every workbench string
 pub fn engine_commit() -> &'static str;                           // R-12
+pub fn gate_reached(s: &Settings) -> bool;                        // R-07: the engine's predicate, quoted with its citation
 ```

@@ -12,8 +12,8 @@ The entities live in `workbench_core` with no UI dependency (constitution V). Th
 | `rate_hz` | `u32` | one of `rr_dr60::SUPPORTED_HOST_RATES`, else `OpenError::UnsupportedRate` |
 | `channels` | `u16` | ≥ 1 |
 | `frames` | `u64` | per channel |
-| `channel` | `Channel::Index(u16) \| Channel::Mix` | default `Index(0)` (D2) |
-| `samples` | `Box<[f32]>` | the selected channel after FR-002's conversion |
+| `channel` | `Channel::Index(u16) \| Channel::Mix` | 0-based in the model (`Index(0)` is "channel 1" on screen and in the sidecar); default `Index(0)` (D2) |
+| `samples` | `Arc<[f32]>` | the selected channel after FR-002's conversion, built once at decode |
 | `raw_sha256` | `[u8; 32]` | the file's bytes (informational, D9) |
 | `input_sha256` | `[u8; 32]` | `samples` as f32 LE; decides "same input" |
 | `non_finite`, `subnormal` | `u64` | counts in `samples`; shown, passed unchanged |
@@ -30,27 +30,27 @@ Changing `channel` decodes the file again (R-15).
 | `value` | `ControlReading` | starts at the engine's default reading |
 | `status` | `Accepted \| Refused(String) \| NotOnOnePass \| ReadOnly` | `NotOnOnePass` when `entry.paths` excludes the one-pass; `ReadOnly` for the host rate |
 
-**Panel** = `Vec<ControlRow>` + `settings: Settings` (built from the `Setting` rows) + `check_engine: Pipeline` (R-08).
+**Panel** = `Vec<ControlRow>` + `settings: Settings` (built from the `Setting` rows) + `check_engine: Pipeline` (R-08). `Panel::from_entries(&[ControlEntry], rate)` is the seam; `Panel::new(rate)` passes `controls()`.
 `Panel::set(index, reading)` writes through the class's path, re-checks the value (one control,
 then the whole settings, then the tap against the route) and updates every row's status.
 `Panel::renderable()` is true when no row is `Refused`.
 
 ## RenderRequest → Render
 
-`RenderRequest { input: Arc<[f32]>, rate_hz, settings: Settings, engine_values: Vec<(u32, ControlReading)>, tail: bool, block: usize }`, a snapshot taken at Render.
+`RenderRequest { input: Arc<[f32]> (a clone of `Input.samples`, no copy), rate_hz, settings: Settings, engine_values: Vec<(u32, ControlReading)>, tail: bool, block: usize }`, a snapshot taken at Render.
 
 | Render field | Type | Rule |
 |---|---|---|
-| `samples` | `Box<[f32]>` | concatenated `output[..produced]` |
+| `samples` | `Arc<[f32]>` | concatenated `output[..produced]`, built once at the end |
 | `request` | the snapshot | used for staleness and the sidecar |
-| `tail_samples` | `u64` | T = latency + drain, or 0 when off |
+| `tail_samples` | `u64` | T = latency + drain; 0 when off or at a front tap (R-07) |
 | `latency_samples`, `drain_samples` | `u32` | from the fresh engine |
 | `splices_or_regions` | `u64` | Σ `BlockInfo.events` |
 | `events` | `Vec<VasEvent>` | for the A/B map (R-06) |
 | `drop_mode` | `bool` | from the settings |
-| `gate_reached` | `bool` | R-07 |
+| `gate_reached` | `bool` | the engine's predicate, quoted (R-07); the splice count is shown only when true |
 | `paused_at_end` | `bool` | the last call's `paused` |
-| `removed` | `u64` | input + tail − `samples.len()` |
+| `not_emitted` | `u64` | input + tail − `samples.len()`: removed pauses, dropped tail and samples held at a final pause; 0 in mute mode, with the gate bypassed and at front taps |
 | `peak` | `f32` | workbench analysis |
 | `output_sha256` | `[u8; 32]` | |
 | `footprint_bytes` | `usize` | `Pipeline::footprint_bytes()` |
@@ -62,12 +62,12 @@ input digest or tail choice differs from `render.request`.
 ## Sidecar
 
 The text form in [contracts/sidecar-v1.md](contracts/sidecar-v1.md). In memory it is a
-`Sidecar { fields, controls: Vec<(String, ControlReading)>, slot_parameters }`. Restoring it gives a
+`Sidecar { fields, controls: Vec<(String, ControlReading)> }` (the slot and its parameters are control lines; the slot is restored first). Restoring it gives a
 `RestoreReport { applied, unknown_ids, missing_controls, refused: Vec<(id, reason)>,
 commit_differs, input_differs }` (D9).
 
 ## Monitor (playback)
 
 `Shared { cursor: AtomicU64, request: AtomicU64, volume_bits: AtomicU32, playing: AtomicBool, overloads: AtomicU64 }`
-and `Takes { original: Box<[f32]>, render: Box<[f32]>, rate_hz }`. Cursor bit 63 is the take, and
-bits 0–62 the position. The callback function is `monitor::fill(&Takes, &Shared, out: &mut [f32])` (R-05).
+and `Takes { original: Arc<[f32]>, render: Arc<[f32]>, rate_hz }` (clones, no copies). Cursor bit 63 is the take, and
+bits 0–62 the position. The callback function is `monitor::fill(&Takes, &Shared, left: &mut [f32], right: &mut [f32])`, writing the same samples to both (R-04, R-05).

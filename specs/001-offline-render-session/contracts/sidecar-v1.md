@@ -12,12 +12,10 @@ workbench.version 0.1.0
 engine.version 0.92.0
 engine.commit a06318ca1c7ded42f46d83c34716cdfad8a59446
 conversion 1
-host_rate_hz 48000
-seed 0
 recording_counter 0
 block 4096
 tail_samples 6128
-channel 1                      # or: channel mix
+channel 1                      # 1-based; or: channel mix
 input.file voice.wav           # the rest of the line, verbatim
 input.frames 2880000
 input.raw_sha256 9f…
@@ -28,14 +26,16 @@ render.splices_or_regions 4
 render.mode drop               # or mute
 render.gate_reached yes
 render.paused_at_end no
-render.removed 169584
+render.not_emitted 169584
 render.peak 1.96374 0x3ffb5d2e
 render.sha256 77…
-control route speaker
+control route 0
 control volume 0.13345174 0x3e08a73f
 control vas.sensitivity 3
 control agc.knee_dbfs -1 0xbf800000
 control tap 8
+control host_rate_hz 48000
+control seed 0
 …one line per manifest control, in manifest order…
 ```
 
@@ -48,8 +48,9 @@ control tap 8
 | continuous | `<shortest round-trip decimal> 0x<8 hex digits>` | the bits are the value; the decimal must parse to the same bits, or the line is malformed |
 | choice | the engine value as a decimal `u32` | must be one of the control's options, or it is refused (listed, not malformed) |
 
-Values are written as the engine reads them back after the write (spec 025: −0.0 continuous
-values read back as 0.0 through the live path; settings fields keep their sign).
+Values are written as the engine reads them back after the write. −0.0 reads back as 0.0 on
+every path (`set_settings_value` and the live path store it as 0.0; engine `control_map.rs:324`).
+The component slot's line is applied before its parameters' lines, whatever the file's order.
 
 ## Rules
 
@@ -63,5 +64,5 @@ values read back as 0.0 through the live path; settings fields keep their sign).
   Y; the render may differ".
 - `input.sha256` different from the loaded input → listed: "the input differs". Values are still
   restored.
-- `host_rate_hz` is informational: the loaded file's rate is the session's (D4). It is listed when
-  it differs.
+- `control host_rate_hz` is informational: the loaded file's rate is the session's (D4). It is
+  listed when it differs and is never applied.

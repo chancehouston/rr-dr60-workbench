@@ -17,6 +17,15 @@
 - Q: Are the tap and the component slot editable in 001? → A: Both, like every manifest control; the tap's incompatibility with the route is refused beside both controls (D4, US2 AS4, AS6); the plan of record amended.
 - Q: What makes a reopened sidecar's input "the same"? → A: The digest of the converted engine-input samples; the raw-file digest is shown for information only (D9, FR-014).
 
+### Session 2026-11-02 (plan reviews: dated restatements)
+
+- FR-002, the float mix: "rounds once" holds for integer files (exact `i64` sum; one correct rounding, research R-02). Float files are summed in double precision in channel order, divided, and rounded to single precision, which is deterministic but not a single rounding.
+- FR-009, wording: the engine's wording denylist contains the stem "event", so the screen says **"splices"** (drop mode) or **"muted regions"** (mute mode). "Gate events" stays the requirement's term only.
+- FR-009, "samples removed" is restated as **"not emitted"**: input + tail − output. It counts removed pauses, dropped tail silence and samples held at a final pause, and it is 0 in mute mode, with the gate bypassed and at the taps before the gate.
+- FR-009, "gate not reached": the engine's own rule decides it (the gate runs when it is enabled and the tap is after the gate). This includes the record-filter tap and a switched-off gate, not only the taps before the gate (research R-07).
+- Engine reach: `process` and `reconfigure` are added, because the check engine uses both (research R-08), and the denominator excludes the engine's hidden test hooks (research R-14).
+- D7, the tail: it is 0 at the taps before the gate, where the engine has no latency and nothing after the gate runs (plan P12).
+
 ## Decisions for sign-off
 
 Read this section first. Each row gives the recommendation, and the Assumptions section lists the alternatives. Rows marked † were changed or added by the draft reviews.
@@ -46,7 +55,7 @@ A developer or enthusiast opens a voice recording, renders it through the defaul
 
 **Acceptance Scenarios**:
 
-1. **Given** a mono WAV at 48 kHz that ends on a tone with no trailing silence, **When** the user opens it and presses Render, **Then** the render shows its length, the engine's latency, the tail, the gate events, the samples removed, whether the gate is paused at the end, and its peak. It equals the oracle of FR-007 sample for sample, and the tone's end is in it.
+1. **Given** a mono WAV at 48 kHz that ends on a tone with no trailing silence, **When** the user opens it and presses Render, **Then** the render shows its length, the engine's latency, the tail, the splices, the samples not emitted, whether the gate is paused at the end, and its peak. It equals the oracle of FR-007 sample for sample, and the tone's end is in it.
 2. **Given** a rendered session that is playing the original, **When** the user switches to the render, **Then** playback continues at the render position that the engine's one-pass map gives for that input position, clamped to the render's end. With "same seconds" chosen, it continues at the same time instead.
 3. **Given** a stereo file, **When** it is opened, **Then** channel 1 is used, and the picker offers channel 2 and "mix", with its label.
 4. **Given** a file at 22.05 kHz, an MP3 or an 8-bit WAV, **When** the user opens it, **Then** it is refused with a message naming what is supported, and the session is unchanged.
@@ -96,7 +105,7 @@ The user exports a render with its sidecar, to share it or quote it in an issue.
 - **Float samples beyond ±1.0** pass to the engine unchanged, and its own stages decide what happens. **NaN, ±infinity and subnormal samples** are zeroed by the engine. The session counts them, shows the count before the render, and passes them unchanged.
 - **A render or an original above full scale.** The default speaker route reads about 2.0 on full-scale material, and the output clamp is off by default. The session shows the sample peak and warns that the output device clips above 1.0. It never clamps, and the export keeps the samples.
 - **Drop mode pausing everything.** The render may be only the tail's output. The session says so and shows "paused at end".
-- **A tap before the gate.** The gate is not reached, so the session shows "gate not reached at this tap" instead of a count of zero.
+- **A tap where the gate does not run** (the taps before the gate, the record-filter tap, or the gate switched off). The session shows "gate not reached" instead of a count of zero.
 - **A very long file** (60 minutes at 96 kHz, 1.38 GB per 32-bit copy). It opens and renders with progress. Memory stays within three copies (the selected input, the previous render and the new render) plus the engine's footprint. Other channels are decoded on demand, so a channel change decodes the file again. An export that would exceed the WAV format's 4 GB limit is refused.
 - **The output device changes or disappears** during playback. Playback stops with a message, and the session survives.
 - **The export target already exists.** The user confirms the overwrite. The WAV is never left without its sidecar, or the reverse.
@@ -120,8 +129,8 @@ The user exports a render with its sidecar, to share it or quote it in an issue.
   - **Length**: input + tail in mute mode, with the gate bypassed, or at a tap before the gate; input + tail − removed in drop mode.
   - **Latency**: the engine's figure for the session's settings and tap. It covers the conversion, the voice-band stages at 1 kHz and the speech coder, and excludes the host-rate stages' small group delay.
   - **Tail** length.
-  - **Gate events**: the splices in drop mode or the muted regions in mute mode, summed from the engine's reports; "gate not reached at this tap" where it applies.
-  - **Samples removed**: input + tail − output.
+  - **Gate events** (shown as "splices" or "muted regions"): summed from the engine's reports; "gate not reached" where the engine's rule says the gate does not run.
+  - **Not emitted**: input + tail − output (removed pauses, dropped tail, samples held at a final pause).
   - **Paused at end**: the gate's state after the last call.
   - **Sample peak** of the render: a workbench analysis of the engine's output.
 - **FR-010**: Playback MUST play the original or the render on the default output device. It MUST switch between them at the position given by the engine's one-pass map, or by the same time when that option is chosen, clamped to the target's end (D6). It MUST alter no sample apart from the device's own rate conversion and a monitor volume that is never exported, and it MUST state each of these on screen when it applies. It MUST warn when the playing take's peak exceeds 1.0.
@@ -135,7 +144,7 @@ The user exports a render with its sidecar, to share it or quote it in an issue.
 
 ### Engine reach
 
-- `Pipeline`: `new`, `process_with_events`, `latency_samples`, `drain_samples`, `max_events`, `settings`, `control_value`, `set_control_value`, `set_component`, `set_component_parameter`, `component_parameter_value`, `recording_counter`, `footprint_bytes`.
+- `Pipeline`: `new`, `process`, `process_with_events`, `reconfigure`, `latency_samples`, `drain_samples`, `max_events`, `settings`, `control_value`, `set_control_value`, `set_component`, `set_component_parameter`, `component_parameter_value`, `recording_counter`, `footprint_bytes`.
 - Every `Tap` value, through the tap control.
 - Outside `Pipeline`: `controls()`, `Settings::validate`, the settings-by-index read and write, `setting_control`, `input::samples_from_i24` and `timeline::onepass_output_to_input`.
 
