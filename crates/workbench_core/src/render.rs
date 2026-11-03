@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rr_dr60::changes::{ChangeEntry, Clock, MAX_CHANGES_PER_CALL};
 use rr_dr60::control_map::ControlReading;
-use rr_dr60::{BlockInfo, Error, Pipeline, Settings, Stream, Tap, VasEvent, VasMode};
+use rr_dr60::{BlockInfo, Error, Pipeline, Settings, Stream, VasEvent, VasMode};
 
 use crate::input::{self, Channel};
 
@@ -94,14 +94,16 @@ pub struct Render {
     pub samples: Arc<[f32]>,
     /// The snapshot it was made from.
     pub request: RenderRequest,
-    /// The tail's length in host samples (0 when off or where the engine's latency is 0).
+    /// The tail's length in host samples (the engine's one-pass drain; 0 when off).
     pub tail_samples: u64,
     /// The engine's latency for the settings and tap.
     pub latency_samples: u32,
-    /// The engine's playback drain (part of the tail's figure).
+    /// The engine's playback drain (the player's figure, shown beside the tail).
     pub drain_samples: u32,
     /// The engine's playback-side latency (the guard around splices in spectra; post-impl B3).
     pub playback_latency_samples: u32,
+    /// The speech coder's constants (`Pipeline::speech_codec_info`): its frame and its delay.
+    pub speech_codec: rr_dr60::speech_codec::SpeechCodecInfo,
     /// The speech coder's delay inside `latency_samples` (0 when it does not run at the tap):
     /// the gate reports' positions exclude it (spec 005b review B2).
     pub codec_delay_samples: u32,
@@ -111,7 +113,7 @@ pub struct Render {
     pub events: Vec<VasEvent>,
     /// The gate removes pauses (drop mode).
     pub drop_mode: bool,
-    /// The gate runs at this configuration ([`gate_reached`]).
+    /// The gate runs at this configuration (`Settings::one_pass_vas_runs`).
     pub gate_reached: bool,
     /// The gate's state after the last call.
     pub paused_at_end: bool,
@@ -125,6 +127,10 @@ pub struct Render {
     pub footprint_bytes: usize,
     /// The meter timeline (spec 002 D1): the rest read-out, then one row per call.
     pub meters: Vec<crate::meters::MeterRow>,
+    /// Whether the render's calls reach each meter field (the engine's rule; spec 008 D5).
+    pub meter_reach: [bool; 13],
+    /// Each field's lag behind the input, host samples (the engine's; `None` where unreached).
+    pub meter_lag: [Option<u32>; 13],
     /// Every change the engine applied (spec 003 D5), the start's plain setters included.
     pub log: Vec<ChangeEntry>,
     /// The live run's range, skips and state (`None` for an offline render).
@@ -245,25 +251,6 @@ pub fn run_chunk(
     p.process_with_events_and_changes(chunk, &mut out[..chunk.len()], events, changes)
 }
 
-/// Whether the voice-activation gate runs for `s` — the engine's own rule, quoted because the
-/// engine does not publish it (rr-dr60-emu#72). At `a06318c`, `paths.rs:204-206`:
-/// `vas.enabled && (tap ∈ {AfterVas, AfterDecoder} || tap.is_after_stage_10())`, where the taps
-/// after stage 10 are `AfterPlayback`, `RouteOutput`, `AfterVolumeAmp`, `AfterSpeaker` and
-/// `AfterEarphone` (`settings.rs:109-117`). The `readings` test pins it by behavior.
-pub fn gate_reached(s: &Settings) -> bool {
-    s.vas.enabled
-        && matches!(
-            s.tap,
-            Tap::AfterVas
-                | Tap::AfterDecoder
-                | Tap::AfterPlayback
-                | Tap::RouteOutput
-                | Tap::AfterVolumeAmp
-                | Tap::AfterSpeaker
-                | Tap::AfterEarphone
-        )
-}
-
 impl RenderRequest {
     /// The staleness predicate (001 D5), shared by renders and the tap table: the input, the
     /// channel, the tail switch, the settings or the engine values differ.
@@ -318,16 +305,37 @@ pub fn fresh_engine(req: &RenderRequest) -> Result<Pipeline, Error> {
     Ok(p)
 }
 
-/// The tail for an engine: its latency plus its playback drain, or 0 where its latency is 0
-/// (the taps before the gate; plan P12). The one-pass has no drain figure of its own
-/// (rr-dr60-emu#73); the `tail` tests show every input sample is emitted.
+/// Whether a one-pass call of `p` reaches each meter field's point and its lag behind the input
+/// in host samples (the engine's rule and figure, engine spec 026 D4; spec 008 D5). The engine
+/// reads its applied route, so call it after a processed sample (a plain route setter lands at
+/// the first one).
+pub fn meter_reach_and_lag(p: &Pipeline) -> ([bool; 13], [Option<u32>; 13]) {
+    use rr_dr60::meters::MeterCall::OnePass;
+    (
+        core::array::from_fn(|i| p.meter_reached(i, OnePass)),
+        core::array::from_fn(|i| p.meter_lag_samples(i, OnePass)),
+    )
+}
+
+/// The meter reach and lag for a request: a throwaway engine built from it, one silent sample
+/// processed so the start's plain setters (the route) have landed (outside any audio callback).
+///
+/// # Errors
+///
+/// The engine's refusal of the request's settings or values.
+pub fn meter_reach_for(req: &RenderRequest) -> Result<([bool; 13], [Option<u32>; 13]), Error> {
+    let mut p = fresh_engine(req)?;
+    let mut out = [0.0f32; 1];
+    let _ = p.process(&[0.0], &mut out)?;
+    Ok(meter_reach_and_lag(&p))
+}
+
+/// The tail for an engine: the engine's one-pass drain (`Pipeline::one_pass_drain_samples`,
+/// engine spec 026 D2; spec 008 D3), the silence that brings every kept sample out and settles
+/// it by the impulse rule while the gate stays open. The `tail` tests show every input sample is
+/// emitted.
 pub fn tail_for(p: &Pipeline) -> u64 {
-    let l = p.latency_samples();
-    if l == 0 {
-        0
-    } else {
-        u64::from(l) + u64::from(p.drain_samples())
-    }
+    u64::from(Pipeline::one_pass_drain_samples(p))
 }
 
 /// Renders `req` (FR-007). `progress` receives the input samples consumed; `cancel` is checked
@@ -418,6 +426,7 @@ pub fn render(
     let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let output_sha256 = input::samples_sha256(&out);
     let not_emitted = total - out.len() as u64;
+    let (meter_reach, meter_lag) = meter_reach_for(req)?;
     Ok(Some(Render {
         samples: out.into(),
         request: req.clone(),
@@ -425,43 +434,48 @@ pub fn render(
         latency_samples: latency,
         drain_samples: drain,
         playback_latency_samples: playback_latency,
-        codec_delay_samples: codec_delay(&p, &req.settings),
+        speech_codec: Pipeline::speech_codec_info(&p),
+        codec_delay_samples: codec_delay(&p),
         splices_or_regions: count,
         events,
         drop_mode: req.settings.vas.mode == VasMode::Drop,
-        gate_reached: gate_reached(&req.settings),
+        gate_reached: req.settings.one_pass_vas_runs(),
         paused_at_end: paused,
         not_emitted,
         peak,
         output_sha256,
         footprint_bytes: p.footprint_bytes(),
         meters,
+        meter_reach,
+        meter_lag,
         log,
         live: None,
     }))
 }
 
-/// The speech coder's delay in host samples when the one-pass's latency includes it (spec 005b
-/// review B2): the coder on and the tap at or after the decoder. The engine keeps this rule
-/// crate-private (`paths.rs`, "after the one-pass record path at the taps from the decoder's
-/// on"); the workbench mirrors it (engine issue #78). The delay is the engine's own
-/// (`speech_codec_info().delay_samples`, device samples) at the host rate.
-pub fn codec_delay(p: &Pipeline, s: &Settings) -> u32 {
-    use rr_dr60::Tap;
-    let before_decoder = matches!(
-        s.tap,
-        Tap::AfterMicCapsule
-            | Tap::AfterMicAmp
-            | Tap::AfterInsert
-            | Tap::AfterAgc
-            | Tap::AfterRecord
-            | Tap::AfterVas
-    );
-    if !s.speech_codec_enabled || before_decoder {
-        return 0;
+/// The speech coder's delay inside the one-pass's latency, in host samples (0 when it does not
+/// run at the tap): the latency less the engine's latency for the gate's reports
+/// (`Pipeline::one_pass_report_latency_samples`, engine spec 026 D1; spec 008 D6).
+pub fn codec_delay(p: &Pipeline) -> u32 {
+    p.latency_samples() - Pipeline::one_pass_report_latency_samples(p)
+}
+
+/// The original (input) position for render position `o`, through the engine's map on the gate
+/// reports' clock (spec 008 D6): the reports' positions exclude the coder's delay `C`, so the
+/// output position is taken back by `C` and mapped with the latency less `C`. A splice is then
+/// counted when it reaches the output. With the coder off this is the engine's map unchanged.
+/// Returns `(input, clamped)` as `timeline::onepass_output_to_input` does.
+pub fn output_to_input(o: u64, r: &Render) -> (u64, bool) {
+    let c = u64::from(r.codec_delay_samples);
+    if o < c {
+        return (0, true);
     }
-    let d = u64::from(Pipeline::speech_codec_info(p).delay_samples) * u64::from(s.host_rate_hz);
-    (d / u64::from(rr_dr60::DEVICE_RATE_HZ)) as u32
+    rr_dr60::timeline::onepass_output_to_input(
+        o - c,
+        r.latency_samples.saturating_sub(r.codec_delay_samples),
+        &r.events,
+        r.drop_mode,
+    )
 }
 
 impl Render {

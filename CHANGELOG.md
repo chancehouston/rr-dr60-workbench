@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (008)
+
+- The engine pin moves to `3890bfe` (rr-dr60-emu 0.93.0, the merge of engine spec 026, the host reads).
+- The engine's reads replace the workbench's mirrors: whether the gate runs (`Settings::one_pass_vas_runs`), the reports' latency, the wording lists (`rr_dr60::wording`), the meter table with reach and lag (`rr_dr60::meters`, `Pipeline::meter_reached` / `meter_lag_samples`), and the stage labels.
+- **The tail is the engine's one-pass drain** (`Pipeline::one_pass_drain_samples`). It was the player's drain, and 0 at the front taps, so renders are longer (7910 host samples of tail at 48 kHz by default) and the front taps get a tail.
+- **The A/B map, the marks, the meters' placement and the spectrum's spans use the gate reports' clock.** With the coder on in drop mode, a splice was counted the coder's delay early; it now lands where it reaches the output (the 005b follow-up).
+- The readings show the speech coder's delay and frame.
+
 ### Added
 
 - Feature 004b, live playback: a clone of the device engine plays an item in the output callback; the route, volume, battery, speed level and mode and the stage switches 10 – 13 change at once; the take keeps every change in scheduling order, uses 004's playback sidecar, and replays as a prefix when stopped early.

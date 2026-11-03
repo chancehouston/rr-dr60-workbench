@@ -12,8 +12,15 @@ pub fn header_lines() -> Vec<(&'static str, String)> {
         (
             "status counts",
             format!(
-                "{} not modeled, {} assumed, {} sourced, {} checked against a real unit",
-                h.counts.not_modeled, h.counts.assumed, h.counts.sourced, h.counts.checked
+                "{} {}, {} {}, {} {}, {} {}",
+                h.counts.not_modeled,
+                rr_dr60::StageStatus::NotModeled.label(),
+                h.counts.assumed,
+                rr_dr60::StageStatus::Assumed.label(),
+                h.counts.sourced,
+                rr_dr60::StageStatus::Sourced.label(),
+                h.counts.checked,
+                rr_dr60::StageStatus::Checked.label()
             ),
         ),
         ("basis", h.basis.to_owned()),
@@ -34,9 +41,10 @@ pub fn stage_fields(e: &rr_dr60::StageEntry) -> Vec<(&'static str, String)> {
         ("number", e.number.to_string()),
         ("identifier", e.identifier.to_owned()),
         ("name", e.name.to_owned()),
-        ("status", format!("{:?}", e.status)),
-        ("path", format!("{:?}", e.path)),
-        ("confidence", format!("{:?}", e.confidence)),
+        // The engine's display labels (engine spec 026 D6; spec 008 D7).
+        ("status", e.status.label().to_owned()),
+        ("path", e.path.label().to_owned()),
+        ("confidence", e.confidence.label().to_owned()),
         ("description", e.description.to_owned()),
         ("not modeled here", e.coverage.to_owned()),
         ("controls", e.controls.to_owned()),

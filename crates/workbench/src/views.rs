@@ -404,7 +404,6 @@ impl Views {
                 })
                 .collect();
         }
-        let route = meters::route_of(&r.request.engine_values);
         ui.horizontal(|ui| {
             if ui.button("Export meters CSV…").clicked() {
                 self.messages = vec![save_csv("meters", &csv::meters_csv(r), r)];
@@ -417,14 +416,14 @@ impl Views {
         });
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, f) in FIELDS.iter().enumerate() {
-                let reached = meters::reached(f, &r.request.settings, route);
+                let reached = r.meter_reach[i];
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.meter_on[i], f.id);
                     ui.weak(format!("{} · {:?} · {:?}", f.unit, f.kind, f.side))
-                        .on_hover_text(format!(
-                            "Workbench note, from the engine's rustdoc at a06318c: {}",
-                            f.note
-                        ));
+                        .on_hover_text(match r.meter_lag[i] {
+                            Some(l) => format!("{} (lag {l} host samples)", f.note),
+                            None => f.note.to_owned(),
+                        });
                     if !reached {
                         ui.colored_label(egui::Color32::GRAY, "not reached (rest)");
                     }

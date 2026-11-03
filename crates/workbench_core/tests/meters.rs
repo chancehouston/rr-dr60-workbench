@@ -223,14 +223,14 @@ fn reach_at(rate: u32) {
             });
             let r = run(&req);
             let rest = r.meters[0].meters;
-            let rt = meters::route_of(&req.engine_values);
             let factor = rr_dr60::battery::ceiling_factor(volts) as f32;
-            for f in &FIELDS {
+            for (i, f) in FIELDS.iter().enumerate() {
                 let moved = r
                     .meters
                     .iter()
                     .any(|m| (f.get)(&m.meters) != (f.get)(&rest));
-                let want = meters::reached(f, &req.settings, rt);
+                // The engine's reach (spec 008 D5), checked against the engine's own behavior.
+                let want = r.meter_reach[i];
                 let tag = format!(
                     "{rate} {tap} {route} agc={agc} clamp={clamp} amp={amp} gate={gate} play={play} rec={rec}: {}",
                     f.id
@@ -312,4 +312,29 @@ fn empty_render_rows() {
     let r = run(&req);
     assert!(r.samples.is_empty());
     assert_eq!(r.meters.len(), 1, "the rest point only");
+}
+
+/// Spec 008 D5: the table is the engine's, and the workbench's device-rate split of the input
+/// side is exactly the input fields whose record-call lag is positive (the record path's
+/// latency to the encoder), at seven rates.
+#[test]
+fn table_and_device_split_are_the_engines() {
+    for (i, f) in FIELDS.iter().enumerate() {
+        let e = &rr_dr60::meters::FIELDS[i];
+        assert_eq!((f.id, f.unit, f.note), (e.identifier, e.unit, e.sentence));
+    }
+    for &rate in &rr_dr60::SUPPORTED_HOST_RATES {
+        let p = rr_dr60::Pipeline::new(rr_dr60::Settings::new(rate)).unwrap();
+        for (i, f) in FIELDS.iter().enumerate() {
+            let device = matches!(f.side, workbench_core::meters::Side::Device);
+            let input_side = !matches!(f.side, workbench_core::meters::Side::Output);
+            let lag = p.meter_lag_samples(i, rr_dr60::meters::MeterCall::Record);
+            assert_eq!(
+                device,
+                input_side && lag.is_some_and(|l| l > 0),
+                "{rate} {}",
+                f.id
+            );
+        }
+    }
 }

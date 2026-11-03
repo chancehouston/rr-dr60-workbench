@@ -760,6 +760,7 @@ impl TakeBuilder {
         // The tail switch as the run used it: on only if the input ended (B5).
         request.tail = start_req.tail && fed > avail;
         let p = render::fresh_engine(&request)?;
+        let reach = render::meter_reach_for(&request)?;
         let peak = self.samples.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         let output_sha256 = crate::input::samples_sha256(&self.samples);
         let splices = self.events.len() as u64;
@@ -768,16 +769,19 @@ impl TakeBuilder {
             latency_samples: p.latency_samples(),
             drain_samples: p.drain_samples(),
             playback_latency_samples: p.playback_latency_samples(),
-            codec_delay_samples: render::codec_delay(&p, &request.settings),
+            speech_codec: Pipeline::speech_codec_info(&p),
+            codec_delay_samples: render::codec_delay(&p),
             splices_or_regions: splices,
             drop_mode: request.settings.vas.mode == rr_dr60::VasMode::Drop,
-            gate_reached: render::gate_reached(&request.settings),
+            gate_reached: request.settings.one_pass_vas_runs(),
             paused_at_end: self.rows.last().is_some_and(|r| r.meters.vas_paused),
             not_emitted: fed - self.samples.len() as u64,
             peak,
             output_sha256,
             footprint_bytes: p.footprint_bytes(),
             meters: self.rows,
+            meter_reach: reach.0,
+            meter_lag: reach.1,
             events: self.events,
             log: self.log,
             live: Some(LiveInfo {

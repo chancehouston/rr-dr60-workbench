@@ -111,7 +111,7 @@ fn workbench_source_raw() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 73] = [
+const LISTED: [&str; 77] = [
     "start_recording",
     "record_with_changes",
     "stop_recording_with_changes",
@@ -189,6 +189,11 @@ const LISTED: [&str; 73] = [
     "component",
     "component_parameter_value",
     "record_latency_pre_encoder_samples",
+    // 008 (engine 0.93.0, spec 026): the host reads.
+    "one_pass_report_latency_samples",
+    "one_pass_drain_samples",
+    "meter_reached",
+    "meter_lag_samples",
 ];
 
 /// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).
@@ -232,8 +237,8 @@ fn reach() {
     println!("uncalled: {uncalled:?}");
     assert_eq!(
         methods.len(),
-        70,
-        "the public, reachable Pipeline methods at engine 0.92.0 (81 less the 11 `__` test hooks)"
+        74,
+        "the public, reachable Pipeline methods at engine 0.93.0 (0.92's 70 and spec 026's four)"
     );
     // Spec 006 D5: every method reached (constitution II), and the list complete.
     assert_eq!(

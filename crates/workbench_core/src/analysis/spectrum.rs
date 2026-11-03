@@ -213,23 +213,13 @@ pub fn render_runs(range_out: (u64, u64), r: &Render) -> Vec<(u64, u64)> {
 }
 
 /// The original's spans that the render's `runs` came from, mapped by the engine's map
-/// (`timeline::onepass_output_to_input`).
+/// (`timeline::onepass_output_to_input` on the gate reports' clock, `render::output_to_input`).
 fn original_spans(runs: &[(u64, u64)], r: &Render, input_len: u64) -> Vec<(u64, u64)> {
     runs.iter()
         .filter(|(a, b)| b > a)
         .map(|&(a, b)| {
-            let (i0, _) = rr_dr60::timeline::onepass_output_to_input(
-                a,
-                r.latency_samples,
-                &r.events,
-                r.drop_mode,
-            );
-            let (i1, _) = rr_dr60::timeline::onepass_output_to_input(
-                b - 1,
-                r.latency_samples,
-                &r.events,
-                r.drop_mode,
-            );
+            let (i0, _) = crate::render::output_to_input(a, r);
+            let (i1, _) = crate::render::output_to_input(b - 1, r);
             (i0.min(input_len), (i1 + 1).min(input_len))
         })
         .collect()
