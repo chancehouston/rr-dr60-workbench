@@ -17,7 +17,8 @@ fn main() {
         shared.set_volume(0.0);
         let takes = Takes {
             original: take.clone(),
-            render: take,
+            render: take.clone(),
+            b: take,
             rate_hz: rate,
         };
         let p = playback::Playback::start(takes, shared.clone()).expect("start");

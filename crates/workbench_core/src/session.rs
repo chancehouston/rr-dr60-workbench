@@ -21,6 +21,26 @@ pub struct Session {
     range: Option<(u64, u64, Vec<Scheduled>)>,
     /// A live take's values at the stop: its staleness is judged against them (plan review B2).
     live_end: Option<RenderRequest>,
+    /// The comparison render B (spec 005b D1).
+    b: Option<Render>,
+}
+
+/// A preset not loaded (spec 005b D6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresetLoadError {
+    /// The preset's refusal.
+    Preset(crate::preset::PresetError),
+    /// No input is open.
+    NoInput,
+}
+
+impl std::fmt::Display for PresetLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preset(e) => write!(f, "{e}"),
+            Self::NoInput => write!(f, "Open an input first: its file decides the rate"),
+        }
+    }
 }
 
 /// A comparable summary of a session (the "session unchanged" tests).
@@ -65,6 +85,36 @@ impl Session {
         self.render.as_ref()
     }
 
+    /// The comparison render B (spec 005b D1).
+    pub fn b(&self) -> Option<&Render> {
+        self.b.as_ref()
+    }
+
+    /// Keeps the current render as B (spec 005b D1); `false` when there is no render.
+    pub fn keep_as_b(&mut self) -> bool {
+        self.b = self.render.clone();
+        self.b.is_some()
+    }
+
+    /// Drops B.
+    pub fn clear_b(&mut self) {
+        self.b = None;
+    }
+
+    /// Loads a preset into the panel (spec 005b D6): a restored live range and its schedule are
+    /// cleared, the render becomes stale by the panel's change, B is untouched.
+    ///
+    /// # Errors
+    ///
+    /// The preset's refusal, or no input open (the open file decides the rate).
+    pub fn load_preset(&mut self, text: &str) -> Result<RestoreReport, PresetLoadError> {
+        let p = crate::preset::read(text).map_err(PresetLoadError::Preset)?;
+        let panel = self.panel.as_mut().ok_or(PresetLoadError::NoInput)?;
+        let rep = crate::preset::restore(&p, panel);
+        self.range = None;
+        Ok(rep)
+    }
+
     /// The tail switch.
     pub fn tail(&self) -> bool {
         self.tail
@@ -100,6 +150,7 @@ impl Session {
             self.render = None;
             self.range = None;
             self.live_end = None;
+            self.b = None;
         }
         self.path = Some(path.to_path_buf());
         self.input = Some(inp);

@@ -506,6 +506,7 @@ impl TakeBuilder {
             latency_samples: p.latency_samples(),
             drain_samples: p.drain_samples(),
             playback_latency_samples: p.playback_latency_samples(),
+            codec_delay_samples: render::codec_delay(&p, &request.settings),
             splices_or_regions: splices,
             drop_mode: request.settings.vas.mode == rr_dr60::VasMode::Drop,
             gate_reached: render::gate_reached(&request.settings),

@@ -103,7 +103,7 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 51] = [
+const LISTED: [&str; 52] = [
     "start_recording",
     "record_with_changes",
     "stop_recording_with_changes",
@@ -156,6 +156,8 @@ const LISTED: [&str; 51] = [
     "record",
     "set_component",
     "set_component_parameter",
+    // Spec 005b FR-008 (restated): the coder's delay in the gate reports.
+    "speech_codec_info",
 ];
 
 /// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).

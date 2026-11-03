@@ -369,12 +369,17 @@ impl Workbench {
             .session
             .render()
             .map_or_else(|| Arc::from(Vec::new()), |r| r.samples.clone());
+        let b: Arc<[f32]> = self
+            .session
+            .b()
+            .map_or_else(|| Arc::from(Vec::new()), |r| r.samples.clone());
         let original = inp.samples.clone();
         let rate = inp.rate_hz;
         if self.playback.is_none() {
             let takes = Takes {
                 original,
                 render,
+                b,
                 rate_hz: rate,
             };
             match Playback::start(takes, self.shared.clone()) {
@@ -386,32 +391,41 @@ impl Workbench {
             }
             self.shared.request(take, 0);
         } else if self.shared.cursor().0 != take {
-            // Playing the other take goes through the A/B map (hardware review B2).
-            self.switch();
+            // Playing another take goes through the input (hardware review B2; spec 005b D5).
+            self.switch_to(take);
         }
         self.shared.playing.store(true, Ordering::Relaxed);
     }
 
-    /// The A/B switch at the mapped position (D6), based on the position read now.
+    /// The A/B switch (D6; spec 005b D5): original → render → B (when kept) → original.
     fn switch(&mut self) {
-        let (Some(inp), Some(r)) = (self.session.input(), self.session.render()) else {
+        let next = match self.shared.cursor().0 {
+            Take::Original => Take::Render,
+            Take::Render if self.session.b().is_some() => Take::B,
+            _ => Take::Original,
+        };
+        self.switch_to(next);
+    }
+
+    /// Moves the playback to `to` at the moment the current take is at, through the input.
+    fn switch_to(&mut self, to: Take) {
+        let Some(inp) = self.session.input() else {
             return;
         };
-        if self.playback.is_none() {
+        if self.playback.is_none() || self.session.render().is_none() {
             return;
         }
-        let (take, pos) = self.shared.cursor();
-        match take {
-            Take::Original => {
-                self.shared
-                    .request_from(Take::Render, ab::to_render(pos, r, self.ab_mode), pos);
-            }
-            Take::Render => self.shared.request_from(
-                Take::Original,
-                ab::to_original(pos, r, self.ab_mode, inp.samples.len() as u64),
-                pos,
-            ),
-        }
+        let (from, pos) = self.shared.cursor();
+        let mapped = ab::switch(
+            from,
+            pos,
+            to,
+            self.session.render(),
+            self.session.b(),
+            inp.samples.len() as u64,
+            self.ab_mode,
+        );
+        self.shared.request_from(to, mapped, pos);
     }
 
     fn export(&mut self) {
@@ -607,6 +621,7 @@ impl eframe::App for Workbench {
                     (views::Tab::Taps, "Taps"),
                     (views::Tab::Stages, "Stages"),
                     (views::Tab::Device, "Device"),
+                    (views::Tab::Compare, "Compare"),
                 ] {
                     ui.selectable_value(&mut self.views.tab, t, name);
                 }
@@ -616,11 +631,18 @@ impl eframe::App for Workbench {
             }
             ui.separator();
             let playhead = self.playback.as_ref().map(|_| self.shared.cursor());
-            let playhead = playhead.and_then(|(t, p)| match t {
-                Take::Original => Some(p),
-                Take::Render => self.session.render().map(|r| {
-                    ab::to_original(p, r, AbMode::EngineMap, r.request.input.len() as u64)
-                }),
+            // The playhead in input positions, through the engine's map (spec 005b D5).
+            let playhead = playhead.and_then(|(t, p)| {
+                let inp = self.session.input()?;
+                Some(ab::switch(
+                    t,
+                    p,
+                    Take::Original,
+                    self.session.render(),
+                    self.session.b(),
+                    inp.samples.len() as u64,
+                    AbMode::EngineMap,
+                ))
             });
             match self.views.tab {
                 views::Tab::Session => self.session_view(ui, &ctx),
@@ -628,6 +650,7 @@ impl eframe::App for Workbench {
                 views::Tab::Meters => self.views.meters(ui, &self.session),
                 views::Tab::Taps => self.views.taps(ui, &self.session),
                 views::Tab::Stages => self.views.stages(ui),
+                views::Tab::Compare => self.views.compare(ui, &self.session),
                 views::Tab::Device => {
                     self.device_view(ui);
                     ui.separator();
@@ -642,6 +665,7 @@ impl Workbench {
     fn file_bar(&mut self, ui: &mut egui::Ui) {
         let mut open: Option<(PathBuf, Channel)> = None;
         let mut sidecar = false;
+        let mut preset: Option<bool> = None;
         ui.horizontal(|ui| {
             ui.strong(format!(
                 "rr_dr60 {} ({})",
@@ -695,6 +719,25 @@ impl Workbench {
             if ui.button("Open sidecar…").clicked() {
                 sidecar = true;
             }
+            if ui
+                .add_enabled(
+                    self.session.panel().is_some(),
+                    egui::Button::new("Save preset…"),
+                )
+                .clicked()
+            {
+                preset = Some(true);
+            }
+            if ui
+                .add_enabled(
+                    self.session.panel().is_some(),
+                    egui::Button::new("Load preset…"),
+                )
+                .on_disabled_hover_text("Open an input first: its file decides the rate")
+                .clicked()
+            {
+                preset = Some(false);
+            }
         });
         if let Some((p, c)) = open {
             self.open_file(p, c);
@@ -702,6 +745,81 @@ impl Workbench {
         if sidecar {
             self.open_sidecar();
         }
+        match preset {
+            Some(true) => self.save_preset(),
+            Some(false) => self.load_preset(),
+            None => {}
+        }
+    }
+
+    /// Writes the panel's values as a preset (spec 005b D6).
+    fn save_preset(&mut self) {
+        let Some(panel) = self.session.panel() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("preset.txt")
+            .save_file()
+        else {
+            return;
+        };
+        self.messages = vec![
+            match std::fs::write(&path, workbench_core::preset::write(panel)) {
+                Ok(()) => format!("Saved the panel's values as a preset: {}", path.display()),
+                Err(e) => format!("{}: {e}", text::OPEN_IO),
+            },
+        ];
+    }
+
+    /// Loads a preset into the panel by the sidecar's restore rules (spec 005b D6).
+    fn load_preset(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("preset", &["txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.messages = vec![format!("{}: {e}", text::OPEN_IO)];
+                return;
+            }
+        };
+        let rep = match self.session.load_preset(&content) {
+            Ok(r) => r,
+            Err(e) => {
+                self.messages = vec![e.to_string()];
+                return;
+            }
+        };
+        self.int_edits.clear();
+        let mut m = vec![format!(
+            "Loaded {} controls from the preset {}",
+            rep.applied,
+            path.display()
+        )];
+        if let Some(c) = &rep.commit_differs {
+            m.push(format!(
+                "Saved with engine commit {c}; this build is {}",
+                workbench_core::engine_commit()
+            ));
+        }
+        for id in &rep.unknown_ids {
+            m.push(format!("Skipped {id}: this engine does not know it"));
+        }
+        for id in &rep.missing_controls {
+            m.push(format!("{id} is not in the preset: left at its default"));
+        }
+        for (id, why) in &rep.refused {
+            m.push(format!("{id} not applied: {why}"));
+        }
+        if let Some(r) = &rep.rate_differs {
+            m.push(format!(
+                "The preset's rate was {r} Hz; the session uses the file's rate"
+            ));
+        }
+        self.messages = m;
     }
 
     fn controls_panel(&mut self, ui: &mut egui::Ui) {
@@ -924,7 +1042,34 @@ impl Workbench {
                 play = Some(Take::Render);
             }
             if ui
+                .add_enabled(
+                    idle && self.session.b().is_some(),
+                    egui::Button::new("Play B"),
+                )
+                .clicked()
+            {
+                play = Some(Take::B);
+            }
+            if ui
+                .add_enabled(
+                    self.session.render().is_some(),
+                    egui::Button::new("Keep as B"),
+                )
+                .on_hover_text("Keep the current render as the comparison render B (Compare tab)")
+                .clicked()
+            {
+                self.stop_ab();
+                self.session.keep_as_b();
+                self.messages = vec![
+                    "B kept; the A/B playback stopped (press Play to listen to the original, A or B)"
+                        .into(),
+                ];
+            }
+            if ui
                 .add_enabled(idle, egui::Button::new("A/B (space)"))
+                .on_hover_text(
+                    "Switches original → A → B (when kept) → original at the same moment of the input",
+                )
                 .clicked()
             {
                 switch = true;
@@ -951,7 +1096,8 @@ impl Workbench {
                 "Playing the {} at {}",
                 match take {
                     Take::Original => "original",
-                    Take::Render => "render",
+                    Take::Render => "render (A)",
+                    Take::B => "comparison render (B)",
                 },
                 secs(pos, rate)
             ));
@@ -1527,6 +1673,7 @@ impl Workbench {
             let takes = Takes {
                 original,
                 render,
+                b: Arc::from(Vec::new()),
                 rate_hz,
             };
             match Playback::start(takes, self.shared.clone()) {

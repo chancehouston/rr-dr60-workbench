@@ -391,12 +391,8 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
 /// from the engine's defaults, so a control the sidecar lacks is at its default; a value the
 /// engine refuses leaves its control at its default.
 pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
-    let mut rep = RestoreReport::default();
-    panel.reset_to_defaults();
     let commit = s.fields.get("engine.commit").cloned().unwrap_or_default();
-    if commit != crate::engine_commit() {
-        rep.commit_differs = Some(commit);
-    }
+    let mut rep = restore_controls(&s.controls, &commit, panel);
     rep.input_differs =
         s.fields.get("input.sha256").map(String::as_str) != Some(hex(&input.input_sha256).as_str());
     rep.tail = s.fields.get("tail").is_some_and(|t| t == "on");
@@ -410,11 +406,28 @@ pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
                 .map(|n| Channel::Index(n - 1))
         }
     });
+    rep
+}
+
+/// The control half of [`restore`] (spec 005b R-04), shared with the presets: the panel starts
+/// from the engine's defaults; each `(identifier, value)` is applied by 001's rules (unknown
+/// identifiers skipped, missing controls listed, refused values left at their defaults, the host
+/// rate reported and never applied), and a `commit` other than this build's is noted.
+pub fn restore_controls(
+    controls: &[(String, String)],
+    commit: &str,
+    panel: &mut Panel,
+) -> RestoreReport {
+    let mut rep = RestoreReport::default();
+    panel.reset_to_defaults();
+    if commit != crate::engine_commit() {
+        rep.commit_differs = Some(commit.to_owned());
+    }
     let mut seen = Vec::new();
     // The slot is written before its parameters in the manifest; apply in manifest order so a
     // file in another order restores the same way.
     let mut ordered: Vec<(u32, &str, &str)> = Vec::new();
-    for (id, v) in &s.controls {
+    for (id, v) in controls {
         match panel.index_of(id) {
             Some(i) => ordered.push((i, id, v)),
             None => rep.unknown_ids.push(id.clone()),

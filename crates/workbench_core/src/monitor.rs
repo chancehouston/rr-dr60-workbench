@@ -1,4 +1,4 @@
-//! The playback callback's body (spec 001 FR-011; research R-05). [`fill`] reads two takes in
+//! The playback callback's body (spec 001 FR-011; research R-05). [`fill`] reads three takes in
 //! memory and a few atomics. It allocates nothing, locks nothing and drops nothing, so the
 //! CoreAudio callback can call it directly.
 
@@ -7,34 +7,41 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// No pending request.
 pub const NO_REQUEST: u64 = u64::MAX;
-const TAKE_BIT: u64 = 1 << 63;
+/// The take's two bits (62 and 63) of the cursor word.
+const TAKE_SHIFT: u32 = 62;
+const TAKE_MASK: u64 = 0b11 << TAKE_SHIFT;
 
 /// Which take plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Take {
     /// The selected channel after conversion.
     Original,
-    /// The engine's render.
+    /// The engine's render (A).
     Render,
+    /// The comparison render B (spec 005b D5).
+    B,
 }
 
-/// Packs a take and a position into one cursor word (bit 63 the take, bits 0 – 62 the position).
+/// Packs a take and a position into one cursor word (bits 62 – 63 the take, bits 0 – 61 the
+/// position).
 pub const fn pack(take: Take, position: u64) -> u64 {
-    let bit = match take {
+    debug_assert!(position < 1 << TAKE_SHIFT, "a position below 2^62");
+    let t: u64 = match take {
         Take::Original => 0,
-        Take::Render => TAKE_BIT,
+        Take::Render => 1,
+        Take::B => 2,
     };
-    bit | (position & !TAKE_BIT)
+    (t << TAKE_SHIFT) | (position & !TAKE_MASK)
 }
 
 /// Unpacks a cursor word.
 pub const fn unpack(word: u64) -> (Take, u64) {
-    let take = if word & TAKE_BIT == 0 {
-        Take::Original
-    } else {
-        Take::Render
+    let take = match (word & TAKE_MASK) >> TAKE_SHIFT {
+        0 => Take::Original,
+        1 => Take::Render,
+        _ => Take::B,
     };
-    (take, word & !TAKE_BIT)
+    (take, word & !TAKE_MASK)
 }
 
 /// The state the UI and the callback share. Only atomics.
@@ -99,8 +106,10 @@ impl Shared {
 pub struct Takes {
     /// The original (the selected channel after conversion).
     pub original: Arc<[f32]>,
-    /// The render.
+    /// The render (A).
     pub render: Arc<[f32]>,
+    /// The comparison render B (empty when none).
+    pub b: Arc<[f32]>,
     /// Their rate.
     pub rate_hz: u32,
 }
@@ -111,6 +120,9 @@ pub fn fill(takes: &Takes, shared: &Shared, left: &mut [f32], right: &mut [f32])
     let req = shared.request.swap(NO_REQUEST, Ordering::AcqRel);
     let mut word = shared.cursor.load(Ordering::Relaxed);
     if req != NO_REQUEST {
+        // `request` and `request_base` are two words: a jump that lands between this swap and
+        // this load turns a mapped request into a jump, or the reverse adds a stale delta, for one
+        // buffer at most. Accepted (spec 005b review B6): the UI sends one request per action.
         let base = shared.request_base.load(Ordering::Relaxed);
         let (_, now) = unpack(word);
         let (t, mapped) = unpack(req);
@@ -130,6 +142,7 @@ pub fn fill(takes: &Takes, shared: &Shared, left: &mut [f32], right: &mut [f32])
     let src: &[f32] = match take {
         Take::Original => &takes.original,
         Take::Render => &takes.render,
+        Take::B => &takes.b,
     };
     let vol = f32::from_bits(shared.volume_bits.load(Ordering::Relaxed));
     let len = src.len() as u64;
