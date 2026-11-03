@@ -172,3 +172,73 @@ fn refusals_leave_session_unchanged() {
         Err(RestoreError::NoInput)
     ));
 }
+
+#[test]
+fn a_live_sidecar_restores_and_reproduces() {
+    // Spec 003 D5 end to end: a live take → its v2 sidecar → a fresh session's restore → the
+    // session's request (range and changes) → a render equal to the take.
+    use rr_dr60::changes::Clock;
+    use workbench_core::live::{Command, LiveCore, TakeBuilder};
+    let d = dir("live");
+    let a = d.join("a.wav");
+    stereo(&a, 16000);
+    let mut s = Session::new();
+    s.open(&a, Channel::Index(0)).unwrap();
+    let mut req = s.plain_request().unwrap();
+    req.start = 4000;
+    let vol = rr_dr60::controls::controls()
+        .iter()
+        .position(|e| e.identifier == "volume")
+        .unwrap() as u32;
+    let thr = rr_dr60::controls::controls()
+        .iter()
+        .position(|e| e.identifier == "vas.threshold_dbfs")
+        .unwrap() as u32;
+    let (mut core, mut q) = LiveCore::new(&req, &[(Clock::Input, 3000, thr, -30.0)]).unwrap();
+    let mut b = TakeBuilder::default();
+    let mut buf = vec![0.0f32; 512];
+    for k in 0..20 {
+        if k == 4 {
+            q.commands
+                .push(Command {
+                    control: vol,
+                    value: 0.4,
+                })
+                .unwrap();
+        }
+        core.fill(&mut buf);
+        b.drain(&mut q);
+    }
+    b.drain(&mut q);
+    let take = b.finish(&req, &q.state).unwrap();
+    assert!(
+        take.log.iter().filter(|e| e.tag >= 1).count() >= 2,
+        "both clocks landed"
+    );
+    let text = workbench_core::sidecar::write(&take);
+    let mut t = Session::new();
+    t.open(&a, Channel::Index(0)).unwrap();
+    t.restore(&text).unwrap();
+    let (start, fed, changes) = t.range().cloned().expect("the live range restored");
+    assert_eq!(
+        (start, fed, changes.len()),
+        (
+            4000,
+            take.live.as_ref().unwrap().fed,
+            take.request.changes.len()
+        )
+    );
+    let r = run(&t.request().unwrap());
+    assert!(
+        r.samples
+            .iter()
+            .zip(take.samples.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
+            && r.samples.len() == take.samples.len(),
+        "the restored take re-renders bit for bit"
+    );
+    assert_eq!(r.log, take.log);
+    // The take, accepted with the values at the stop, is not stale.
+    assert!(s.accept_live(take, s.plain_request().unwrap()));
+    assert!(!s.is_stale());
+}

@@ -181,6 +181,7 @@ impl Workbench {
     }
 
     fn open_file(&mut self, path: PathBuf, channel: Channel) {
+        self.stop_live();
         let before = self.session.input().map(|i| i.raw_sha256);
         match self.session.open(&path, channel) {
             Ok(()) => {
@@ -411,7 +412,7 @@ impl eframe::App for Workbench {
         if self.job.is_some() || self.playback.is_some() || self.views.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        if self.live.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.switch();
         }
         egui::Panel::top("file").show(ui, |ui| self.file_bar(ui));
@@ -723,14 +724,25 @@ impl Workbench {
         let mut stop = false;
         let mut export = false;
         let (take, pos) = self.shared.cursor();
+        // One output stream: A/B playback is off while live (spec 003 D9).
+        let idle = self.live.is_none();
         ui.horizontal(|ui| {
-            if ui.button("Play original").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Play original"))
+                .clicked()
+            {
                 play = Some(Take::Original);
             }
-            if ui.button("Play render").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Play render"))
+                .clicked()
+            {
                 play = Some(Take::Render);
             }
-            if ui.button("A/B (space)").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("A/B (space)"))
+                .clicked()
+            {
                 switch = true;
             }
             if ui.button("Stop").clicked() {
