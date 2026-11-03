@@ -19,4 +19,4 @@ description: "Tasks for feature 004, the record and play paths"
   - the readings;
   - the take: listen, and export (WAV, stored form, playback sidecar).
 - [X] T008 `reach` lists the 004 methods (41/70). Records.
-- [ ] T009 Post-implementation review, applied before the PR.
+- [X] T009 Post-implementation review (B1 – B10), applied before the PR (records.md).

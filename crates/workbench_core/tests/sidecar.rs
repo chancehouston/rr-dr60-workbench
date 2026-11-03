@@ -36,8 +36,9 @@ fn values_roundtrip() {
     for (id, v) in ends {
         let mut p = Panel::new(rate).unwrap();
         let i = p.index_of(&id).unwrap();
-        // A live control the one-pass does not run (the playback speed) is not carried by a
-        // one-pass sidecar (the playback sidecar of spec 004 records it): skipped.
+        // A live control the one-pass does not run (the playback speed level) is not carried
+        // by a one-pass sidecar (the playback sidecar of spec 004 records it): skipped. The
+        // speed mode and the memory controls round-trip.
         let engine_only = p.row(&id).is_some_and(|r| {
             r.status == workbench_core::panel::RowStatus::NotOnOnePass
                 && r.class == workbench_core::panel::ControlClass::EngineControl
@@ -62,8 +63,8 @@ fn values_roundtrip() {
     println!("range ends round-tripped: {tested} of {total}; skipped {skipped:?}");
     skipped.sort();
     skipped.dedup();
-    // The ends not round-tripped are listed exactly, so a new skip fails here: the controls not
-    // on the one-pass (the memory and the playback speed).
+    // The ends not round-tripped are listed exactly, so a new skip fails here: the playback
+    // speed level, both ends.
     println!("skipped controls: {skipped:?}");
     assert_eq!(
         skipped,

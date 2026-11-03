@@ -74,7 +74,7 @@ fn memory_full_self_stops() {
     let x = voiced(rate, 5.0, 0.5);
     let out = d.record(&x, 0, None, &[]).unwrap();
     assert!(
-        matches!(out.end, RecordEnd::SelfStopped { number: 1 }),
+        matches!(out.end, RecordEnd::SelfStopped { number: 1, length } if length > 0 && Some(length) == d.items().first().map(|i| i.length)),
         "{:?}",
         out.end
     );
@@ -208,28 +208,207 @@ fn playback_take_reproduces() {
         let changes = seeded_changes(rate, 0xFEED ^ u64::from(rate));
         let take = d.play_to_take(1, &values, &changes).unwrap();
         let landed = take.log.iter().filter(|e| e.tag >= 1).count();
-        assert!(landed >= 3, "{rate}: changes landed ({landed})");
+        assert_eq!(landed, 10, "{rate}: every change landed");
+        // The changes matter: a take without them differs.
+        let plain = d.play_to_take(1, &values, &[]).unwrap();
+        assert_ne!(
+            plain.samples, take.samples,
+            "{rate}: the changes change the output"
+        );
+        // An independent oracle (B3): a direct engine that imports the stored form, sets the
+        // values, schedules every change before the start, and plays in 4096-sample calls.
+        let mut p = Pipeline::new(s).unwrap();
+        p.import(&stored).unwrap();
+        for &(i, v) in &values {
+            p.set_control_value(i, v).unwrap();
+        }
+        for c in &changes {
+            p.schedule_change(
+                rr_dr60::Stream::Playback,
+                c.position,
+                c.control,
+                c.value,
+                c.tag,
+            )
+            .unwrap();
+        }
+        p.start_playback(1).unwrap();
+        let mut buf = vec![0.0f32; 4096];
+        let mut cb =
+            vec![rr_dr60::changes::ChangeEntry::default(); rr_dr60::changes::MAX_CHANGES_PER_CALL];
+        let (mut direct, mut dlog) = (Vec::new(), Vec::new());
+        loop {
+            let info = p.play_with_changes(&mut buf, &mut cb).unwrap();
+            direct.extend_from_slice(&buf[..info.produced]);
+            dlog.extend_from_slice(&cb[..info.changes]);
+            if info.finished {
+                break;
+            }
+        }
+        assert!(
+            direct
+                .iter()
+                .zip(&take.samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+                && direct.len() == take.samples.len(),
+            "{rate}: the direct engine"
+        );
+        assert_eq!(dlog, take.log, "{rate}: the direct engine's log");
+        // The replay through the sidecar and the stored form, with its checks.
         use sha2::{Digest, Sha256};
         let sha: [u8; 32] = Sha256::digest(&stored).into();
         let text = device::playback_sidecar(&take, "item.rrdr60", &sha);
         let sc = device::read_playback(&text).unwrap();
-        let re = device::replay(&sc, &stored).unwrap();
+        let rep = device::replay(&sc, &stored).unwrap();
         println!(
             "{rate} Hz: {} samples, {landed} changes landed, {} frames",
             take.samples.len(),
             take.frames
         );
         assert!(
-            take.samples
-                .iter()
-                .zip(&re.samples)
-                .all(|(a, b)| a.to_bits() == b.to_bits())
-                && take.samples.len() == re.samples.len(),
-            "{rate}: the output"
+            rep.reproduces(),
+            "{rate}: {:?}",
+            (rep.stored_matches, rep.produced_matches, rep.output_matches)
         );
-        assert_eq!(take.log, re.log, "{rate}: the log");
-        assert_eq!(sc.produced, take.samples.len() as u64);
+        assert_eq!(take.log, rep.take.log, "{rate}: the log");
+        let mut tampered = stored.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(
+            device::replay(&sc, &tampered).map_or(true, |r| !r.stored_matches),
+            "{rate}: a changed stored form is noticed"
+        );
     }
+}
+
+#[test]
+fn failed_recording_leaves_memory_unchanged() {
+    // B1: a record-side change the engine refuses (out of range) leaves no item and an idle
+    // engine.
+    let rate = 16000;
+    let mut d = Device::new(settings(rate, |_| {})).unwrap();
+    let bad = vec![Scheduled {
+        clock: Clock::Input,
+        position: 100,
+        control: idx("agc.knee_dbfs"),
+        value: 99.0,
+        tag: 1,
+    }];
+    assert!(d.record(&voiced(rate, 1.0, 0.5), 0, None, &bad).is_err());
+    assert!(d.items().is_empty(), "no item kept");
+    assert!(
+        d.record(&tone(rate, 0.3, 0.5), 0, None, &[]).is_ok(),
+        "the engine is idle again"
+    );
+}
+
+#[test]
+fn record_changes_twin() {
+    // B8: record-side changes against a direct engine that schedules them before one call.
+    let rate = 48000;
+    let s = settings(rate, |_| {});
+    let x = voiced(rate, 1.5, 0.6);
+    let changes = vec![
+        Scheduled {
+            clock: Clock::Input,
+            position: 12_000,
+            control: idx("agc.knee_dbfs"),
+            value: -12.0,
+            tag: 1,
+        },
+        Scheduled {
+            clock: Clock::Input,
+            position: 30_000,
+            control: idx("vas.threshold_dbfs"),
+            value: -30.0,
+            tag: 2,
+        },
+    ];
+    let mut d = Device::new(s).unwrap();
+    let out = d.record(&x, 0, None, &changes).unwrap();
+    assert_eq!(out.log.iter().filter(|e| e.tag >= 1).count(), 2);
+    let mut p = Pipeline::new(s).unwrap();
+    p.start_recording().unwrap();
+    for c in &changes {
+        p.schedule_change(
+            rr_dr60::Stream::Record,
+            c.position,
+            c.control,
+            c.value,
+            c.tag,
+        )
+        .unwrap();
+    }
+    let mut ev = vec![VasEvent::new(0, 0); p.max_record_events(x.len()).max(1)];
+    let _ = p.record(&x, &mut ev).unwrap();
+    let _ = p.stop_recording(&mut ev).unwrap();
+    let mut direct = vec![0u8; p.export_len(1).unwrap()];
+    let n = p.export(1, &mut direct).unwrap();
+    direct.truncate(n);
+    assert_eq!(d.export(1).unwrap(), direct, "the stored form");
+    assert_eq!(out.fed, x.len() as u64);
+}
+
+#[test]
+fn clocks_and_guards() {
+    let rate = 8000;
+    let s = settings(rate, |_| {});
+    let mut d = Device::new(s).unwrap();
+    let x = voiced(rate, 1.0, 0.5);
+    // B6: a change in the wrong clock is refused before the start.
+    let out_clock = vec![Scheduled {
+        clock: Clock::Output,
+        position: 10,
+        control: idx("volume"),
+        value: 0.5,
+        tag: 1,
+    }];
+    assert!(d.record(&x, 0, None, &out_clock).is_err());
+    d.record(&x, 0, None, &[]).unwrap();
+    let in_clock = vec![Scheduled {
+        clock: Clock::Input,
+        position: 10,
+        control: idx("vas.threshold_dbfs"),
+        value: -30.0,
+        tag: 1,
+    }];
+    assert!(d.play_to_take(1, &[], &in_clock).is_err());
+    // B4: exporting a take after an erase renumbered the items is refused.
+    d.record(&tone(rate, 0.5, 0.5), 0, None, &[]).unwrap();
+    let take2 = d.play_to_take(2, &[], &[]).unwrap();
+    d.erase(1).unwrap();
+    d.record(&noise(rate, 0.4, 0.3), 0, None, &[]).unwrap();
+    assert!(
+        d.export_take(&take2).is_err(),
+        "item 2 is now another recording"
+    );
+    // B5: the playback reader is strict.
+    let stored = d.export(1).unwrap();
+    use sha2::{Digest, Sha256};
+    let sha: [u8; 32] = Sha256::digest(&stored).into();
+    let t = d.play_to_take(1, &[], &[]).unwrap();
+    let text = device::playback_sidecar(&t, "x.rrdr60", &sha);
+    assert!(device::read_playback(&text).is_ok());
+    assert!(
+        device::read_playback(&format!("{text}colour blue\n")).is_err(),
+        "an unknown key"
+    );
+    let no_knee: String = text
+        .lines()
+        .filter(|l| !l.starts_with("setting agc.knee_dbfs "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(
+        device::read_playback(&no_knee).is_err(),
+        "a missing setting"
+    );
+    assert!(
+        device::read_playback(&format!(
+            "{text}change out 5 no.such 1 0x3ff0000000000000 9\n"
+        ))
+        .is_err(),
+        "an unknown control"
+    );
 }
 
 #[test]

@@ -74,6 +74,7 @@ struct Workbench {
     device: Option<workbench_core::device::Device>,
     device_take: Option<workbench_core::device::PlayTake>,
     record_start_s: f64,
+    device_item: Option<u32>,
     live_start_s: f64,
     schedule: Vec<(u32, f64, f64)>,
     sched_control: u32,
@@ -99,6 +100,7 @@ impl Workbench {
             device: None,
             device_take: None,
             record_start_s: 0.0,
+            device_item: None,
             live_start_s: 0.0,
             schedule: Vec::new(),
             sched_control: 1,
@@ -1071,7 +1073,7 @@ impl Workbench {
     /// The device (spec 004): build or reset it from the panel, record the session's input, the
     /// memory, and play an item to a take.
     fn device_view(&mut self, ui: &mut egui::Ui) {
-        use workbench_core::device::{self, Device, PLAY_VALUES, RecordEnd};
+        use workbench_core::device::{self, Device, RecordEnd};
         let Some(settings) = self.session.plain_request().map(|r| r.settings) else {
             ui.label("Open a file first: the device uses the panel's values and the file's rate.");
             return;
@@ -1125,13 +1127,16 @@ impl Workbench {
                 && let Some(inp) = self.session.input()
             {
                 let start = (self.record_start_s * f64::from(inp.rate_hz)) as usize;
-                self.messages = vec![match dev.record(&inp.samples, start, None, &[]) {
+                let changes = device::record_request(&self.schedule, inp.rate_hz);
+                self.messages = vec![match dev.record(&inp.samples, start, None, &changes) {
                     Ok(o) => match o.end {
                         RecordEnd::Kept { number, length } => {
                             format!("Recorded item {number}: {length} device samples")
                         }
-                        RecordEnd::SelfStopped { number } => {
-                            format!("The memory filled: item {number} kept")
+                        RecordEnd::SelfStopped { number, length } => {
+                            format!(
+                                "The memory filled: item {number} kept, {length} device samples"
+                            )
                         }
                         RecordEnd::DiscardedEmpty => "Nothing was kept: no item added".into(),
                     },
@@ -1161,6 +1166,9 @@ impl Workbench {
                 );
                 ui.monospace(format!("{:016x}", it.digest));
                 ui.horizontal(|ui| {
+                    if ui.small_button("readings").clicked() {
+                        self.device_item = Some(it.number);
+                    }
                     if ui.small_button("play to take").clicked() {
                         play = Some(it.number);
                     }
@@ -1193,6 +1201,13 @@ impl Workbench {
                     Err(e) => e,
                 }];
             }
+            if ui.button("Replay a playback sidecar…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("playback sidecar", &["txt"])
+                    .pick_file()
+            {
+                self.messages = replay_messages(&path);
+            }
         });
         if let Some(n) = erase
             && let Err(e) = dev.erase(n)
@@ -1215,40 +1230,10 @@ impl Workbench {
         }
         if let Some(n) = play {
             // The playback values from the panel's rows, the schedule list's playback entries.
-            let values: Vec<(u32, rr_dr60::control_map::ControlReading)> = self
-                .session
-                .panel()
-                .map(|p| {
-                    PLAY_VALUES
-                        .iter()
-                        .filter_map(|id| p.row(id).map(|r| (r.index, r.value)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let rate = f64::from(settings.host_rate_hz);
-            let mut changes: Vec<workbench_core::render::Scheduled> = self
-                .schedule
-                .iter()
-                .filter(|(c, _, _)| {
-                    rr_dr60::controls::controls()[*c as usize]
-                        .paths
-                        .contains(rr_dr60::controls::ControlPaths::PLAYBACK)
-                })
-                .enumerate()
-                .map(
-                    |(k, &(control, value, t))| workbench_core::render::Scheduled {
-                        clock: rr_dr60::changes::Clock::Output,
-                        position: (t * rate).round() as u64,
-                        control,
-                        value,
-                        tag: k as u64 + 1,
-                    },
-                )
-                .collect();
-            changes.sort_by_key(|c| c.position);
-            for (k, c) in changes.iter_mut().enumerate() {
-                c.tag = k as u64 + 1;
-            }
+            let (values, changes) = match self.session.panel() {
+                Some(p) => device::play_request(p, &self.schedule, dev.settings().host_rate_hz),
+                None => (Vec::new(), Vec::new()),
+            };
             match dev.play_to_take(n, &values, &changes) {
                 Ok(t) => {
                     self.messages = vec![format!(
@@ -1262,7 +1247,11 @@ impl Workbench {
                 Err(e) => self.messages = vec![e.to_string()],
             }
         }
-        if let Some(n) = items.first().map(|i| i.number) {
+        if let Some(n) = self
+            .device_item
+            .filter(|n| items.iter().any(|i| i.number == *n))
+            .or_else(|| items.first().map(|i| i.number))
+        {
             egui::CollapsingHeader::new(format!("Readings of item {n}")).show(ui, |ui| {
                 for (k, v) in dev.readings(n) {
                     ui.label(format!("{k}: {v}"));
@@ -1280,7 +1269,7 @@ impl Workbench {
                 t.frames
             ));
             ui.horizontal(|ui| {
-                if ui.button("Listen").clicked() {
+                if ui.button("Listen (take only)").clicked() {
                     listen = true;
                 }
                 if ui.button("Export take…").clicked() {
@@ -1325,7 +1314,7 @@ impl Workbench {
             let base = path.with_extension("");
             let stored_path = base.with_extension("rrdr60");
             let result = dev
-                .export(t.number)
+                .export_take(t)
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| {
                     use sha2::{Digest, Sha256};
@@ -1349,5 +1338,36 @@ impl Workbench {
                 Err(e) => e,
             }];
         }
+    }
+}
+
+/// Replays a playback sidecar against the stored form named in it, beside the sidecar (D5),
+/// and reports each check.
+fn replay_messages(path: &std::path::Path) -> Vec<String> {
+    use workbench_core::device;
+    let result = std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| device::read_playback(&t))
+        .and_then(|sc| {
+            let stored_path = path.with_file_name(&sc.stored_file);
+            let bytes = std::fs::read(&stored_path)
+                .map_err(|e| format!("{}: {e}", stored_path.display()))?;
+            device::replay(&sc, &bytes)
+        });
+    match result {
+        Ok(r) => vec![
+            if r.reproduces() {
+                format!(
+                    "The take reproduces: {} samples, bit for bit",
+                    r.take.samples.len()
+                )
+            } else {
+                "The take does not reproduce".to_owned()
+            },
+            format!("stored form's SHA-256 matches: {}", r.stored_matches),
+            format!("produced count matches: {}", r.produced_matches),
+            format!("output's SHA-256 matches: {}", r.output_matches),
+        ],
+        Err(e) => vec![e],
     }
 }
