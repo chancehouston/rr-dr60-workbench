@@ -1,6 +1,6 @@
 # Implementation Plan: The offline render session
 
-**Branch**: `001-offline-render-session` | **Date**: 2026-11-02 | **Spec**: [spec.md](spec.md) (signed off 2026-11-02)
+**Branch**: `001-offline-render-session` | **Date**: 2026-11-02 | **Spec**: [spec.md](spec.md) (signed off 2026-11-02) | **Plan signed off by the owner 2026-11-02** (P1 – P13 as recommended)
 
 **Input**: Feature specification from `specs/001-offline-render-session/spec.md`
 
@@ -116,7 +116,7 @@ crates/workbench/
 
 | Item | Why needed | Simpler alternative rejected because |
 |---|---|---|
-| The channel mix and the monitor volume are arithmetic on the audio path, which constitution I 1.0.0 does not name (P10) | The spec's D2 and D6, both signed off | Dropping them would remove features the owner signed. The PATCH amendment names them; this row closes when it merges. |
+| The channel mix and the monitor volume are arithmetic on the audio path, which constitution I 1.0.0 does not name (P10) | The spec's D2 and D6, both signed off | Dropping them would remove features the owner signed. Constitution 1.0.1 (on this branch) names them, so this row closes when the branch merges. |
 
 ## Traceability
 

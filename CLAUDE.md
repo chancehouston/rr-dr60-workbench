@@ -33,5 +33,5 @@ Guidance for Claude Code working in this repository. Keep it current.
 
 ## Current status
 
-- 2026-11-02: Bootstrapped (constitution 1.0.0, the plan of record, the read-only control list,
+- 2026-11-02: Bootstrapped (constitution 1.0.0 (1.0.1 on the 001 branch), the plan of record, the read-only control list,
   CI on macOS). Engine pin `a06318c` (0.92.0). Next: feature 001, the offline render session.
