@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chance Houston"]
+repository = "https://github.com/chancehouston/rr-dr60-workbench"
+publish = false
+
+[workspace.dependencies]
+# The engine, pinned to a full commit of rr-dr60-emu's main (0.92.0; no v0.92.0 tag yet).
+rr_dr60 = { git = "https://github.com/chancehouston/rr-dr60-emu", rev = "a06318ca1c7ded42f46d83c34716cdfad8a59446" }
+workbench_core = { path = "crates/workbench_core" }
+eframe = "0.37"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

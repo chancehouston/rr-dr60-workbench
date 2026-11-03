@@ -1,0 +1,17 @@
+[package]
+name = "rr_dr60_workbench"
+description = "A desktop power tool for exploring and tuning the rr_dr60 emulation engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+workbench_core.workspace = true
+rr_dr60.workspace = true
+eframe.workspace = true
+
+[lints]
+workspace = true

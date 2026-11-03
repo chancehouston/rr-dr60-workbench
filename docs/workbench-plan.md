@@ -1,0 +1,28 @@
+# The workbench plan of record
+
+The workbench is a desktop power tool for exploring and tuning the rr-dr60-emu engine. It sits
+alongside the iOS app and its test bench and replaces neither. This plan sets the order of
+features. Each feature is a Spec-Kit feature on its own branch, and its spec decides the details.
+The owner set the direction on 2026-11-02: egui, a public repository, a companion tool rather than a product.
+
+Status at bootstrap: the engine is at 0.92.0 (`a06318c`), with 36 controls, 81 public `Pipeline`
+methods and 15 stages. The shell lists the control manifest read-only.
+
+## Features
+
+| # | Feature | What it brings into reach | Depends on |
+|---|---|---|---|
+| 001 | **Offline render session** | Open an audio file at any supported host rate. Edit every setting through a panel generated from the control manifest, render through the default one-pass engine, play the original and the render A/B, export the render with its settings sidecar. | — |
+| 002 | **Taps, scopes and meters** | Pick any `Tap`. Waveform and spectrum views of the input, the tap and the difference. The per-call meters plotted over time. The stage manifest as a panel per stage, with its sources and assumptions. | 001 |
+| 003 | **Live engine** | Real-time playback through the engine on the output device (cpal). Live controls and scheduled changes (`schedule_change`) from the panel. The change log and voice-activation events on a timeline. Optionally, the Mac's microphone as the input. | 001, 002 |
+| 004 | **Record and play paths** | The recorder, the memory (items, capacity, erase, export and import of the stored form), playback with the speed levels and modes, route, volume and battery, stage bypass during playback. | 003 |
+| 005 | **Processing records and comparisons** | Write, read and re-render processing records (spec 020). Two renders side by side with a null test, a spectral difference and a parameter diff. Settings presets saved as files. | 001, 002 |
+| 006 | **Coverage close-out** | The `Pipeline` coverage test at 100 % (constitution II). The component slot (spec 024) and every remaining method and tap. A guided tour of the stages. | 001–005 |
+
+## Standing rules
+
+- Engine gaps become engine issues or specs (constitution I). The workbench pin moves only to a
+  merged engine commit or tag.
+- Each feature lists the `Pipeline` methods and taps it brings into use. The coverage test prints
+  the running ratio from feature 002 on.
+- The owner runs each feature's desk checklist on the Mac before merging.

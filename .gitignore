@@ -1,0 +1,9 @@
+/target/
+.DS_Store
+.vscode/*
+.idea/
+*.swp
+.claude/settings.local.json
+# Audio the workbench writes or the user opens: never committed
+/out/
+*.wav
