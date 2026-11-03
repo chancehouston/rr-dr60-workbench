@@ -12,4 +12,4 @@ description: "Tasks for feature 005b, comparisons and presets"
 - [X] T006 [US2] Tests `ab_three_takes`, `b_follows_the_file` (`tests/compare.rs`), `third_take_packs_and_plays` (`tests/monitor.rs`), the third take in `monitor_alloc`.
 - [X] T007 The window: Keep as B and Play B, the three-take switch and playhead through `ab::switch`, the Compare tab, Save preset… and Load preset… (plan R-05).
 - [X] T008 The gate; the reach ratio unchanged (50/70); the wording check over the new strings (FR-007, FR-008).
-- [ ] T009 Post-implementation reviews (coach and hardware), applied before the PR (records.md).
+- [X] T009 Post-implementation reviews (coach and hardware), applied before the PR (records.md).

@@ -268,11 +268,9 @@ fn null_codec_latency_reported() {
         };
         let (a, b) = (r(false), r(true));
         let t = compare::null_test(&a, &b, Align::Latency).unwrap();
-        assert_eq!(
-            t.s,
-            i64::from(b.latency_samples) - i64::from(a.latency_samples)
-        );
-        assert!(t.s > 0);
+        // The coder's published delay, 180 device samples at the host rate (coach review 12).
+        let delay = i64::from(rr_dr60::speech_codec::info().delay_samples) * i64::from(rate) / 6000;
+        assert_eq!(t.s, delay, "{rate}");
         let w = t.whole.unwrap();
         println!(
             "{rate}: codec off vs on, s = {}, depth {:?} dB, {} of {} differ",
@@ -340,18 +338,54 @@ fn null_no_overlap() {
     e.samples = Vec::new().into();
     let t = compare::null_test(&e, &a, Align::SampleZero).unwrap();
     assert!(t.whole.is_none());
+    assert_eq!(compare::spectral(&e, &a).unwrap_err(), Refused::TooShort);
 }
 
-/// Coach review 5: B gains a splice where A has none (a −43 dBFS tone after voice, gated under a
-/// −40 dBFS threshold only); the prefix ends at that splice's position.
+/// Coach review 5 and hardware review B4: B gains a splice where A has none (a −43 dBFS tone
+/// after voice, gated under a −40 dBFS threshold only, then voice so the pause resumes). The
+/// premise: the first j reports agree. The prefix ends at B's extra splice (before the coder's
+/// delay with the coder on, a conservative end), nulls bit for bit, and the first real
+/// difference is not before it.
 #[test]
 fn null_prefix_drop_mode() {
     for rate in [6000, 48_000] {
-        // Voice after the tone, so B's pause resumes: a pause that never resumes reports no
-        // splice in drop mode (engine spec 024's lesson).
+        for codec in [false, true] {
+            // Voice after the tone, so B's pause resumes: a pause that never resumes reports no
+            // splice in drop mode (engine spec 024's lesson).
+            let mut x = voiced(rate, 0.3, 0.5);
+            x.extend(tone(rate, 1.6, 0.00708));
+            x.extend(voiced(rate, 0.3, 0.5));
+            let r = |th: f64| {
+                run(&request(rate, &x, |p| {
+                    set_switch(p, "speech_codec_enabled", codec);
+                    set_choice(p, "vas.mode", "drop");
+                    set_num(p, "vas.threshold_dbfs", th);
+                }))
+            };
+            let (a, b) = (r(-43.0), r(-40.0));
+            let j = a.events.len();
+            assert!(j < b.events.len(), "{rate} {codec}: B pauses");
+            assert_eq!(&a.events[..], &b.events[..j], "{rate} {codec}: the premise");
+            let t = compare::null_test(&a, &b, Align::Latency).unwrap();
+            let p = t.prefix.unwrap();
+            let w = t.whole.unwrap();
+            let end = p.from + p.samples;
+            assert!(end < w.from + w.samples, "{rate} {codec}");
+            assert_eq!(p.differing, 0, "{rate} {codec}: the prefix nulls");
+            assert!(w.differing > 0);
+            assert!(w.first.unwrap() >= end, "{rate} {codec}: conservative");
+            assert_ne!(a.samples.len(), b.samples.len());
+        }
+    }
+}
+
+/// Hardware review B1: a pause still open at the end reports no splice; the prefix ends at the
+/// paused side's end and the label is set.
+#[test]
+fn null_end_paused() {
+    for rate in [6000, 48_000] {
         let mut x = voiced(rate, 0.3, 0.5);
         x.extend(tone(rate, 1.6, 0.00708));
-        x.extend(voiced(rate, 0.3, 0.5));
         let r = |th: f64| {
             run(&request(rate, &x, |p| {
                 set_switch(p, "speech_codec_enabled", false);
@@ -360,15 +394,38 @@ fn null_prefix_drop_mode() {
             }))
         };
         let (a, b) = (r(-43.0), r(-40.0));
-        assert!(a.events.len() < b.events.len(), "{rate}: B pauses");
+        assert!(!a.paused_at_end && b.paused_at_end, "{rate}");
         let t = compare::null_test(&a, &b, Align::Latency).unwrap();
-        let j = a.events.len();
-        let want = (b.events[j].output_position as i64 - t.s).max(0) as u64;
-        let p = t.prefix.unwrap();
-        let w = t.whole.unwrap();
-        assert_eq!(p.from + p.samples, want.min(w.from + w.samples), "{rate}");
-        assert!(p.samples < w.samples);
-        assert_ne!(a.samples.len(), b.samples.len());
+        assert_eq!(t.ends_paused, Some((false, true)));
+        let p = t.prefix.expect("the end pause is a difference");
+        assert_eq!(
+            p.from + p.samples,
+            (b.samples.len() as i64 - t.s) as u64,
+            "{rate}"
+        );
+    }
+}
+
+/// Hardware review B2: the coder off against on, with equal gate decisions, reads "the reports
+/// agree" (the reports map with the latency less the coder's delay).
+#[test]
+fn codec_reports_agree() {
+    for rate in [6000, 48_000] {
+        let mut x = voiced(rate, 0.5, 0.5);
+        x.extend(vec![0.0f32; rate as usize * 2]);
+        x.extend(voiced(rate, 0.5, 0.5));
+        let r = |on: bool| {
+            run(&request(rate, &x, |p| {
+                set_switch(p, "speech_codec_enabled", on);
+                set_choice(p, "vas.mode", "drop");
+            }))
+        };
+        let (a, b) = (r(false), r(true));
+        assert!(!a.events.is_empty());
+        assert_eq!(b.codec_delay_samples, 180 * rate / 6000);
+        assert_eq!(a.codec_delay_samples, 0);
+        let t = compare::null_test(&a, &b, Align::Latency).unwrap();
+        assert!(t.prefix.is_none(), "{rate}: the gates agree");
     }
 }
 
@@ -393,7 +450,8 @@ fn rates_differ() {
     assert!(d.controls.iter().any(|c| c.identifier == "host_rate_hz"));
 }
 
-/// Coach review 3: a live take's budget skips cut the spans; an incomplete take is labelled.
+/// Coach review 3, restated by hardware review B3: a live take's budget skips are labelled; the
+/// take's samples are continuous engine output, so nothing is cut. An incomplete take is labelled.
 #[test]
 fn compare_live_skips() {
     let rate = 6000;
@@ -406,10 +464,40 @@ fn compare_live_skips() {
     });
     let t = compare::null_test(&a, &b, Align::Latency).unwrap();
     assert_eq!(t.cut_at_skip, Some(5000));
-    assert_eq!(t.whole.unwrap().samples, 5000);
+    assert_eq!(t.whole.unwrap().samples, a.samples.len() as u64);
     assert!(t.incomplete);
     let pair = compare::spectral(&a, &b).unwrap();
-    assert!(pair.render.frames < pair.original.frames);
+    assert_eq!(pair.render.frames, pair.original.frames);
+}
+
+/// Hardware review B5: the two sides keep different runs (A drops the pause, B mutes it), so the
+/// ratio is read from different frames of stationary noise: within the Welch variance of 0 dB in
+/// the voice band.
+#[test]
+fn spectral_different_runs() {
+    let rate = 8000;
+    let mut x = noise(rate, 1.5, 0.1);
+    x.extend(vec![0.0f32; rate as usize * 2]);
+    x.extend(noise(rate, 1.5, 0.1));
+    let r = |mode: &str| {
+        run(&request(rate, &x, |p| {
+            set_switch(p, "speech_codec_enabled", false);
+            set_switch(p, "mic.capsule_enabled", false);
+            set_choice(p, "vas.mode", mode);
+        }))
+    };
+    let (a, b) = (r("drop"), r("mute"));
+    assert!(!a.events.is_empty() && !b.events.is_empty());
+    assert_ne!(compare::side_runs(&a), compare::side_runs(&b));
+    let pair = compare::spectral(&a, &b).unwrap();
+    let mut worst = 0.0f64;
+    for k in 60..=400 {
+        if let Some(d) = pair.ratio_db(k) {
+            worst = worst.max(d.abs());
+        }
+    }
+    println!("different runs: worst |B ÷ A| in 300 – 2000 Hz {worst:.3} dB");
+    assert!(worst < 1.5, "{worst}");
 }
 
 /// Coach review 4: D5's rule at every ordered pair of takes, in both modes, with different
@@ -456,6 +544,22 @@ fn ab_three_takes() {
         assert_eq!(
             ab::switch(Take::Original, 100, Take::B, Some(&a), Some(&b), n, mode),
             into(Take::B, 2000)
+        );
+    }
+    // Past a take's end (coach review 7): within the input, and at the target's end.
+    for mode in [AbMode::EngineMap, AbMode::SameSeconds] {
+        for from in [Take::Render, Take::B] {
+            let len = if from == Take::Render {
+                a.samples.len()
+            } else {
+                b.samples.len()
+            } as u64;
+            assert!(ab::switch(from, len + 500, Take::Original, Some(&a), Some(&b), n, mode) <= n);
+        }
+        assert_eq!(
+            ab::render_at(n * 10, &b, mode),
+            b.samples.len() as u64,
+            "{mode:?}"
         );
     }
     // No B: position 0.

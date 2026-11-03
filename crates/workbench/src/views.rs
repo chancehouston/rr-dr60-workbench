@@ -70,6 +70,12 @@ pub struct Views {
 /// A comparison computed for one pair of renders and an alignment (spec 005b).
 struct Cmp {
     key: ([u8; 32], [u8; 32], compare::Align),
+    /// The requests the comparison was made for: an output can stay the same while a request
+    /// changes (coach review 1).
+    reqs: (
+        workbench_core::render::RenderRequest,
+        workbench_core::render::RenderRequest,
+    ),
     env: (Envelope, Envelope),
     diff: compare::ParamDiff,
     null: Result<compare::NullTest, compare::Refused>,
@@ -78,17 +84,25 @@ struct Cmp {
 
 fn fmt_figures(f: &compare::Figures, rate: u32) -> Vec<String> {
     let at = |i: u64| format!("{i} ({:.4} s)", i as f64 / f64::from(rate));
+    if f.samples == 0 {
+        return vec![format!(
+            "empty span: the gates differ from A's first compared sample, {}",
+            at(f.from)
+        )];
+    }
+    if f.differing == 0 {
+        return vec![
+            format!("samples compared: {} from A's {}", f.samples, at(f.from)),
+            "bit-identical: d = 0".to_owned(),
+        ];
+    }
     vec![
         format!("samples compared: {} from A's {}", f.samples, at(f.from)),
-        if f.differing == 0 {
-            "bit-identical".to_owned()
-        } else {
-            format!(
-                "{} samples differ; the first at {}",
-                f.differing,
-                f.first.map_or_else(String::new, at)
-            )
-        },
+        format!(
+            "{} samples differ; the first at {}",
+            f.differing,
+            f.first.map_or_else(String::new, at)
+        ),
         format!("peak |d|: {:.2} dBFS at {}", f.peak_dbfs, at(f.peak_at)),
         format!("RMS of d: {:.2} dB re RMS 1.0", f.rms_db),
         match f.depth_db {
@@ -575,6 +589,17 @@ impl Views {
     }
 }
 
+fn channel_text(c: workbench_core::input::Channel) -> String {
+    match c {
+        workbench_core::input::Channel::Index(i) => (u32::from(i) + 1).to_string(),
+        workbench_core::input::Channel::Mix => "mix".to_owned(),
+    }
+}
+
+fn len_text(l: Option<u64>) -> String {
+    l.map_or_else(|| "to the end".to_owned(), |n| n.to_string())
+}
+
 impl Views {
     /// The Compare tab (spec 005b D1 – D4): A (the current render) against B (the kept one).
     pub fn compare(&mut self, ui: &mut egui::Ui, session: &Session) {
@@ -592,9 +617,12 @@ impl Views {
             ui.selectable_value(&mut self.cmp_align, compare::Align::SampleZero, "sample 0");
         });
         let key = (a.output_sha256, b.output_sha256, self.cmp_align);
-        if self.cmp.as_ref().is_none_or(|c| c.key != key) {
+        let stale =
+            |c: &Cmp| c.key != key || c.reqs.0.differs(&a.request) || c.reqs.1.differs(&b.request);
+        if self.cmp.as_ref().is_none_or(stale) {
             self.cmp = Some(Cmp {
                 key,
+                reqs: (a.request.clone(), b.request.clone()),
                 env: (Envelope::new(&a.samples), Envelope::new(&b.samples)),
                 diff: compare::param_diff(&a.request, &b.request),
                 null: compare::null_test(a, b, self.cmp_align),
@@ -604,8 +632,20 @@ impl Views {
         let c = self.cmp.as_ref().expect("computed");
         let rate = a.request.rate_hz;
         let span = |r: &Render| {
+            // The input the spectrum's runs came from (D4): the first and last run, through the
+            // engine's map.
+            let runs = compare::side_runs(r);
+            let n = r.request.input.len() as u64;
+            let input = match (runs.first(), runs.last()) {
+                (Some(f), Some(l)) => format!(
+                    "the spectrum's runs from input [{}, {})",
+                    ab::input_at(f.0, r, AbMode::EngineMap, n),
+                    ab::input_at(l.1, r, AbMode::EngineMap, n)
+                ),
+                _ => "no spectrum runs".to_owned(),
+            };
             format!(
-                "input from {} ({:.3} s), {} output samples, latency {}",
+                "start {} ({:.3} s), {} output samples, latency {}; {input}",
                 r.request.start,
                 r.request.start as f64 / f64::from(rate),
                 r.samples.len(),
@@ -662,13 +702,13 @@ impl Views {
                     row("input SHA-256", x.clone(), y.clone());
                 }
                 if let Some((x, y)) = c.diff.channel {
-                    row("channel", format!("{x:?}"), format!("{y:?}"));
+                    row("channel", channel_text(x), channel_text(y));
                 }
                 if let Some((x, y)) = c.diff.start {
                     row("start", x.to_string(), y.to_string());
                 }
                 if let Some((x, y)) = c.diff.len {
-                    row("length", format!("{x:?}"), format!("{y:?}"));
+                    row("length", len_text(x), len_text(y));
                 }
                 if let Some((x, y)) = c.diff.tail {
                     row("tail", x.to_string(), y.to_string());
@@ -721,7 +761,13 @@ impl Views {
                     ui.label(format!("The starts differ ({x} and {y}): the hiss streams, the converter's phase and the coder's frame grid start at each render's own first sample, so the null has a floor from the setup"));
                 }
                 if let Some(at) = t.cut_at_skip {
-                    ui.label(format!("Cut at A's {at}: a live take's budget skip (silence that is not engine output)"));
+                    ui.label(format!("A live take's first budget skip is at A's {at}: the device played silence there; the take's samples are the engine's output without it"));
+                }
+                if let Some((x, y)) = t.ends_paused {
+                    ui.label(format!(
+                        "The gate is paused at the end of {} only: it stops early and reports no splice for that pause",
+                        if x && !y { "A" } else { "B" }
+                    ));
                 }
                 if t.incomplete {
                     ui.label("Incomplete take: its capture overflowed, it does not reproduce");

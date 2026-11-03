@@ -25,6 +25,7 @@ pub enum Take {
 /// Packs a take and a position into one cursor word (bits 62 – 63 the take, bits 0 – 61 the
 /// position).
 pub const fn pack(take: Take, position: u64) -> u64 {
+    debug_assert!(position < 1 << TAKE_SHIFT, "a position below 2^62");
     let t: u64 = match take {
         Take::Original => 0,
         Take::Render => 1,
@@ -119,6 +120,9 @@ pub fn fill(takes: &Takes, shared: &Shared, left: &mut [f32], right: &mut [f32])
     let req = shared.request.swap(NO_REQUEST, Ordering::AcqRel);
     let mut word = shared.cursor.load(Ordering::Relaxed);
     if req != NO_REQUEST {
+        // `request` and `request_base` are two words: a jump that lands between this swap and
+        // this load turns a mapped request into a jump, or the reverse adds a stale delta, for one
+        // buffer at most. Accepted (spec 005b review B6): the UI sends one request per action.
         let base = shared.request_base.load(Ordering::Relaxed);
         let (_, now) = unpack(word);
         let (t, mapped) = unpack(req);

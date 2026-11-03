@@ -21,6 +21,16 @@
 - **The latency term** has no engine-identical oracle (the codec changes every sample: hardware Q2, coach 1). It is tested on hand-built renders. The start term is tested on the engine, on the quiet front with a start on the conversion grid. The codec-on-against-off case asserts s and reports the figures.
 - **Different starts** give a null floor from the setup (the hiss streams, the converter's phase, the coder's frame grid), so the view says so whenever the starts differ (hardware Q3).
 
+### Session 2026-11-03 (post-implementation reviews: dated restatements)
+
+- **Live skips** (hardware B3, restating the session above): a live take's samples are continuous engine output; the budget's silence went to the device only. So nothing is cut at a skip. The first skip is shown as a label, and an incomplete take is labelled.
+- **The gate reports** map to the input with the latency less the coder's delay: the reports' positions exclude it (hardware B2). The rule for when the latency includes it is the engine's, crate-private, so the workbench mirrors it (engine issue #78). The prefix ends before A's coder delay: o_B maps to o_B + C_B − C_A − s. With the coder on, that is conservative by the delay, which covers the frame the coder decides it in.
+- **A pause still open at the end** reports no splice. When one side ends paused and the other does not, the prefix ends at the paused side's end, and the view labels it (hardware B1).
+- **Keep as B, and every new render, stop the A/B playback**: the takes are fixed when the playback starts. Keep as B says so (coach 5).
+- **The A/B switch** cycles original → A → B (when kept) → original (coach 11).
+- **Load preset** is refused while a live take runs (coach 2).
+- **The Compare tab** recomputes when either request changes, not only either output (coach 1).
+
 ## Decisions (in force under autopilot)
 
 | # | Decision | In force |
@@ -79,7 +89,8 @@ A user renders, keeps the render as B, changes one control, renders again and co
 
 - **Renders of different lengths** (a changed threshold in drop mode): the overlap and the prefix span, the lengths shown (`null_prefix_drop_mode`).
 - **A render with no output**, or a shift past the end: "no overlap" (`null_no_overlap`); the spectral difference is refused.
-- **A live take with budget skips as B**: cut at the first skip and labelled (`compare_live_skips`).
+- **A live take with budget skips as B**: the first skip labelled (`compare_live_skips`).
+- **A pause open at the end on one side** (`null_end_paused`); **the coder off against on with equal gates** reads "the reports agree" (`codec_reports_agree`); **sides with different runs** (drop against mute) read the same frames (`spectral_different_runs`).
 - **B kept and the panel changed**: B does not change.
 - **A is B** (Keep as B and no new render): bit-identical.
 
@@ -92,7 +103,7 @@ A user renders, keeps the render as B, changes one control, renders again and co
 - **FR-005**: The A/B MUST follow D5 (`ab_three_takes`, `third_take_packs_and_plays`).
 - **FR-006**: Presets MUST follow D6 (`preset_roundtrip`, `preset_reports`, `preset_is_not_a_sidecar`, `preset_needs_input_and_clears_range`).
 - **FR-007**: Every new string MUST pass the wording check.
-- **FR-008**: 005b calls no new `Pipeline` method; the reach test still prints its ratio (50/70).
+- **FR-008**: The reach test prints its ratio. 005b brings `speech_codec_info` into use, for the coder's delay in the gate reports (restated after the hardware review's B2; the draft said no new method).
 
 ## Success Criteria *(mandatory)*
 

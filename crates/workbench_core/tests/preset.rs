@@ -67,9 +67,20 @@ fn preset_reports() {
     assert_eq!(rep.unknown_ids, ["no.such_control"]);
     assert_eq!(rep.missing_controls, ["vas.onset_ms"]);
     assert!(
-        rep.refused.iter().any(|(id, _)| id == "agc.attack_ms"),
+        rep.refused
+            .iter()
+            .any(|(id, why)| id == "agc.attack_ms" && !why.is_empty()),
         "{rep:?}"
     );
+    // Left at their defaults (coach review 6).
+    for id in ["agc.attack_ms", "vas.onset_ms"] {
+        let row = p.row(id).unwrap();
+        assert_eq!(
+            row.value,
+            workbench_core::panel::default_reading(&row.entry, rate),
+            "{id}"
+        );
+    }
     assert!(rep.commit_differs.is_some());
     assert!(rep.rate_differs.is_some(), "the preset's 48 kHz is noted");
     assert_eq!(p.rate_hz(), rate, "the rate is not applied");

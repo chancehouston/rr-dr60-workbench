@@ -1060,9 +1060,16 @@ impl Workbench {
             {
                 self.stop_ab();
                 self.session.keep_as_b();
+                self.messages = vec![
+                    "B kept; the A/B playback stopped (press Play to listen to the original, A or B)"
+                        .into(),
+                ];
             }
             if ui
                 .add_enabled(idle, egui::Button::new("A/B (space)"))
+                .on_hover_text(
+                    "Switches original → A → B (when kept) → original at the same moment of the input",
+                )
                 .clicked()
             {
                 switch = true;

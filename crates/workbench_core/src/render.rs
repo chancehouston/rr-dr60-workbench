@@ -41,7 +41,8 @@ pub struct LiveInfo {
     pub start: u64,
     /// The input fed from S (the tail's silence included).
     pub fed: u64,
-    /// Silence the budget inserted: (take position, samples), not engine output.
+    /// The budget's skips: (engine-output position, samples of device silence). The silence went
+    /// to the device only; the take's samples are continuous engine output (spec 005b review B3).
     pub skips: Vec<(u64, u64)>,
     /// A queue or report buffer overflowed: the take does not reproduce.
     pub incomplete: bool,
@@ -101,6 +102,9 @@ pub struct Render {
     pub drain_samples: u32,
     /// The engine's playback-side latency (the guard around splices in spectra; post-impl B3).
     pub playback_latency_samples: u32,
+    /// The speech coder's delay inside `latency_samples` (0 when it does not run at the tap):
+    /// the gate reports' positions exclude it (spec 005b review B2).
+    pub codec_delay_samples: u32,
     /// Splices (drop mode) or muted regions (mute mode): Σ `BlockInfo.events`.
     pub splices_or_regions: u64,
     /// The engine's reports, positions from the start of the render.
@@ -421,6 +425,7 @@ pub fn render(
         latency_samples: latency,
         drain_samples: drain,
         playback_latency_samples: playback_latency,
+        codec_delay_samples: codec_delay(&p, &req.settings),
         splices_or_regions: count,
         events,
         drop_mode: req.settings.vas.mode == VasMode::Drop,
@@ -434,6 +439,29 @@ pub fn render(
         log,
         live: None,
     }))
+}
+
+/// The speech coder's delay in host samples when the one-pass's latency includes it (spec 005b
+/// review B2): the coder on and the tap at or after the decoder. The engine keeps this rule
+/// crate-private (`paths.rs`, "after the one-pass record path at the taps from the decoder's
+/// on"); the workbench mirrors it (engine issue #78). The delay is the engine's own
+/// (`speech_codec_info().delay_samples`, device samples) at the host rate.
+pub fn codec_delay(p: &Pipeline, s: &Settings) -> u32 {
+    use rr_dr60::Tap;
+    let before_decoder = matches!(
+        s.tap,
+        Tap::AfterMicCapsule
+            | Tap::AfterMicAmp
+            | Tap::AfterInsert
+            | Tap::AfterAgc
+            | Tap::AfterRecord
+            | Tap::AfterVas
+    );
+    if !s.speech_codec_enabled || before_decoder {
+        return 0;
+    }
+    let d = u64::from(Pipeline::speech_codec_info(p).delay_samples) * u64::from(s.host_rate_hz);
+    (d / u64::from(rr_dr60::DEVICE_RATE_HZ)) as u32
 }
 
 impl Render {

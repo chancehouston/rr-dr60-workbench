@@ -208,14 +208,16 @@ pub fn overlap(len_a: u64, len_b: u64, s: i64) -> (u64, u64) {
     (lo, hi)
 }
 
-/// A render's gate reports in input terms: (input position, input length).
+/// A render's gate reports in input terms: (input position, input length). The reports'
+/// positions exclude the speech coder's delay, so they map with the latency less it (review B2).
 fn reports(r: &Render) -> Vec<(u64, u64)> {
+    let pre = r.latency_samples - r.codec_delay_samples;
     r.events
         .iter()
         .map(|e| {
             let (i, _) = rr_dr60::timeline::onepass_output_to_input(
                 e.output_position,
-                r.latency_samples,
+                pre,
                 &r.events,
                 r.drop_mode,
             );
@@ -224,20 +226,40 @@ fn reports(r: &Render) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// A's output index where the two renders' gate reports first differ (D3), or `None` when they
-/// agree: the earlier of A's report and B's mapped into A's coordinates by −s.
+/// A's output index where the two renders' gates first differ (D3), or `None` when they agree:
+/// the first differing report, the earlier of A's and B's; or, when the gate is paused at the
+/// end on one side only, that side's end (a pause that never resumes reports no splice: review
+/// B1). The end is placed before A's coder delay: B's position o maps to A's as
+/// o + C_B − C_A − s. With the coder on this is earlier than the splice reaches the output by
+/// the coder's delay, which covers the frame the coder decides it in (a conservative prefix).
 pub fn prefix_end(a: &Render, b: &Render, s: i64) -> Option<u64> {
+    let (ca, cb) = (
+        i64::from(a.codec_delay_samples),
+        i64::from(b.codec_delay_samples),
+    );
+    let at_a = |o: u64| o;
+    let at_b = |o: u64| (o as i64 + cb - ca - s).max(0) as u64;
     let (ra, rb) = (reports(a), reports(b));
-    let j = (0..ra.len().max(rb.len())).find(|&j| ra.get(j) != rb.get(j))?;
-    let at_a = a.events.get(j).map(|e| e.output_position);
-    let at_b = b
-        .events
-        .get(j)
-        .map(|e| (e.output_position as i64 - s).max(0) as u64);
-    match (at_a, at_b) {
+    let by_report = (0..ra.len().max(rb.len()))
+        .find(|&j| ra.get(j) != rb.get(j))
+        .and_then(|j| {
+            let x = a.events.get(j).map(|e| at_a(e.output_position));
+            let y = b.events.get(j).map(|e| at_b(e.output_position));
+            match (x, y) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            }
+        });
+    let by_end = (a.paused_at_end != b.paused_at_end).then(|| {
+        if a.paused_at_end {
+            (a.samples.len() as i64 - ca).max(0) as u64
+        } else {
+            at_b((b.samples.len() as i64 - cb).max(0) as u64)
+        }
+    });
+    match (by_report, by_end) {
         (Some(x), Some(y)) => Some(x.min(y)),
-        (Some(x), None) | (None, Some(x)) => Some(x),
-        (None, None) => None,
+        (x, y) => x.or(y),
     }
 }
 
@@ -259,9 +281,12 @@ pub struct NullTest {
     /// The prefix up to the first differing gate report; `None`: the reports agree (the same as
     /// the overlap) or there is no overlap.
     pub prefix: Option<Figures>,
-    /// A's index where a live take's first budget skip (silence that is not engine output) cuts
-    /// the spans, on either side (coach review 3).
+    /// A's index of a live take's first budget skip on either side (a label: the take's samples
+    /// are continuous engine output, the skip's silence went to the device only; review B3).
     pub cut_at_skip: Option<u64>,
+    /// The gate is paused at the end on one side only (A's, B's): that side stops early and
+    /// reports no splice for it (review B1).
+    pub ends_paused: Option<(bool, bool)>,
     /// A side is a live take whose capture overflowed.
     pub incomplete: bool,
     /// The starts differ (A's, B's): the null then has a floor from the setup, not the settings
@@ -314,15 +339,12 @@ pub fn null_test(a: &Render, b: &Render, align: Align) -> Result<NullTest, Refus
         Align::SampleZero => 0,
     };
     let (len_a, len_b) = (a.samples.len() as u64, b.samples.len() as u64);
-    let (lo, mut hi) = overlap(len_a, len_b, s);
+    let (lo, hi) = overlap(len_a, len_b, s);
     let skip_b = first_skip(b).map(|p| (p as i64 - s).max(0) as u64);
     let cut_at_skip = match (first_skip(a), skip_b) {
         (Some(x), Some(y)) => Some(x.min(y)),
         (x, y) => x.or(y),
     };
-    if let Some(c) = cut_at_skip {
-        hi = hi.min(c.max(lo));
-    }
     let whole = (hi > lo).then(|| figures(&a.samples, &b.samples, s, lo, hi));
     let prefix = whole.and_then(|_| {
         prefix_end(a, b, s).map(|e| figures(&a.samples, &b.samples, s, lo, e.clamp(lo, hi)))
@@ -341,20 +363,20 @@ pub fn null_test(a: &Render, b: &Render, align: Align) -> Result<NullTest, Refus
         whole,
         prefix,
         cut_at_skip,
+        ends_paused: (a.paused_at_end != b.paused_at_end)
+            .then_some((a.paused_at_end, b.paused_at_end)),
         incomplete: incomplete(a) || incomplete(b),
         starts_differ: (a.request.start != b.request.start)
             .then_some((a.request.start, b.request.start)),
     })
 }
 
-/// A side's runs for the spectrum: 002's runs, cut at a live take's first budget skip.
-fn side_runs(r: &Render) -> Vec<(u64, u64)> {
-    let end = first_skip(r).unwrap_or(r.samples.len() as u64);
-    spectrum::render_runs((0, end), r)
+/// A side's runs for the spectrum: 002's runs over the whole render.
+pub fn side_runs(r: &Render) -> Vec<(u64, u64)> {
+    spectrum::render_runs((0, r.samples.len() as u64), r)
 }
 
-/// The spectral difference (D4): each side's spectrum over its own runs (002's method, cut at a
-/// live take's first budget skip), the ratio
+/// The spectral difference (D4): each side's spectrum over its own runs (002's method), the ratio
 /// B ÷ A by 002's `ratio_db` (the `original` field holds A, `render` B).
 ///
 /// # Errors
@@ -367,6 +389,7 @@ pub fn spectral(a: &Render, b: &Render) -> Result<SpectrumPair, Refused> {
     }
     let sa = spectrum::welch(&a.samples, ra, &side_runs(a)).map_err(|_| Refused::TooShort)?;
     let sb = spectrum::welch(&b.samples, rb, &side_runs(b)).map_err(|_| Refused::TooShort)?;
+    // `range_in` and `range_out` here are A's and B's whole output ranges (not an input range).
     Ok(SpectrumPair {
         original: sa,
         render: sb,
