@@ -12,6 +12,7 @@ pub mod device;
 pub mod export;
 pub mod input;
 pub mod live;
+pub mod live_play;
 pub mod meters;
 pub mod monitor;
 pub mod panel;

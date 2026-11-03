@@ -425,6 +425,9 @@ fn playback_start_values_recorded() {
         tag: 1,
     }];
     let _ = d.play_to_take(1, &[], &first).unwrap();
+    // Values set before a take are the device's own and are recorded at the next start.
+    let set = vec![(idx("volume"), ControlReading::Continuous(0.4))];
+    let _ = d.play_to_take(1, &set, &[]).unwrap();
     let second = d.play_to_take(1, &[], &[]).unwrap();
     let vol = second
         .values
@@ -434,8 +437,9 @@ fn playback_start_values_recorded() {
         .1;
     assert_eq!(
         vol,
-        ControlReading::Continuous(0.7),
-        "the landed volume carried into the next start"
+        ControlReading::Continuous(0.4),
+        "the value set on the device is in force at the next start; a change landed inside a \
+         take does not carry (spec 004b review B5: takes play on a clone)"
     );
 }
 

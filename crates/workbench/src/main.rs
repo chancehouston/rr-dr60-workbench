@@ -60,6 +60,15 @@ struct Job {
     rx: Receiver<Result<Option<Render>, String>>,
 }
 
+/// A live playback on a clone of the device (spec 004b).
+struct LivePlay {
+    playback: Playback,
+    queues: workbench_core::live_play::PlayQueues,
+    take: workbench_core::live_play::PlayTakeBuilder,
+    /// The live controls' current readings, as the widgets show them.
+    readings: Vec<(u32, rr_dr60::control_map::ControlReading)>,
+}
+
 struct Workbench {
     session: Session,
     job: Option<Job>,
@@ -71,6 +80,7 @@ struct Workbench {
     messages: Vec<String>,
     views: views::Views,
     live: Option<LiveRun>,
+    live_play: Option<LivePlay>,
     device: Option<workbench_core::device::Device>,
     device_take: Option<workbench_core::device::PlayTake>,
     record_start_s: f64,
@@ -97,6 +107,7 @@ impl Workbench {
             messages: Vec::new(),
             views: views::Views::default(),
             live: None,
+            live_play: None,
             device: None,
             device_take: None,
             record_start_s: 0.0,
@@ -135,7 +146,9 @@ impl Workbench {
             .collect();
         match workbench_core::live::LiveCore::new(&req, &list) {
             Ok((core, queues)) => {
-                match Playback::start_live(req.rate_hz, self.shared.clone(), core) {
+                let mut core = core;
+                match Playback::start_live(req.rate_hz, self.shared.clone(), move |o| core.fill(o))
+                {
                     Ok(playback) => {
                         self.live = Some(LiveRun {
                             playback,
@@ -181,7 +194,84 @@ impl Workbench {
         }
     }
 
+    /// Plays item `n` live (spec 004b D1): the panel's values and the schedule list's playback
+    /// entries, on a clone of the device in the output callback.
+    fn start_live_play(&mut self, n: u32) {
+        self.stop_playback();
+        self.stop_live();
+        let Some(dev) = &mut self.device else {
+            return;
+        };
+        let rate = dev.settings().host_rate_hz;
+        let (values, changes) = match self.session.panel() {
+            Some(p) => workbench_core::device::play_request(p, &self.schedule, rate),
+            None => (Vec::new(), Vec::new()),
+        };
+        match dev.live_player(n, &values, &changes) {
+            Ok((mut player, queues)) => {
+                let readings = workbench_core::live_play::readings_at_start(&queues.start);
+                match Playback::start_live(rate, self.shared.clone(), move |o| player.fill(o)) {
+                    Ok(playback) => {
+                        self.live_play = Some(LivePlay {
+                            playback,
+                            queues,
+                            take: workbench_core::live_play::PlayTakeBuilder::default(),
+                            readings,
+                        });
+                        self.messages.clear();
+                    }
+                    Err(e) => self.messages = vec![e],
+                }
+            }
+            Err(e) => self.messages = vec![e.to_string()],
+        }
+    }
+
+    /// Stops a live playback; its take becomes the Device tab's playback take (D4).
+    fn stop_live_play(&mut self) {
+        let Some(mut run) = self.live_play.take() else {
+            return;
+        };
+        drop(run.playback);
+        run.take.drain(&mut run.queues);
+        let n0 = run.take.replies.len();
+        let _ = run.take.take_replies(&mut run.queues);
+        let mut m: Vec<String> = run.take.replies[n0..]
+            .iter()
+            .filter_map(|r| r.error.map(|e| format!("A live change was refused: {e}")))
+            .collect();
+        let incomplete = run.queues.state.incomplete.load(Ordering::Relaxed);
+        let take = std::mem::take(&mut run.take).finish(&run.queues);
+        m.insert(
+            0,
+            format!(
+                "Live playback of item {}: {} samples{}",
+                take.number,
+                take.samples.len(),
+                if take.stopped_early {
+                    " (stopped early: a replay compares this prefix)"
+                } else {
+                    ""
+                }
+            ),
+        );
+        if incomplete {
+            m.push(text::LIVE_INCOMPLETE.to_owned());
+        }
+        self.messages = m;
+        self.device_take = Some(take);
+    }
+
+    /// Stops every output stream: a live playback and the A/B (spec 004b D7), before another
+    /// stream starts or the input changes.
     fn stop_playback(&mut self) {
+        self.stop_live_play();
+        self.stop_ab();
+    }
+
+    /// Stops the A/B playback only (spec 004b review B4: a finished render does not end a
+    /// live playback).
+    fn stop_ab(&mut self) {
         self.shared.playing.store(false, Ordering::Relaxed);
         // Dropping stops the unit before the takes are released (plan P3).
         self.playback = None;
@@ -236,7 +326,7 @@ impl Workbench {
             self.job = None;
             match result {
                 Ok(Some(r)) => {
-                    self.stop_playback();
+                    self.stop_ab();
                     if !self.session.accept_render(r) {
                         self.messages = vec!["A render of another file was discarded".into()];
                     }
@@ -400,7 +490,7 @@ impl eframe::App for Workbench {
         let ctx = ui.ctx().clone();
         self.poll_job();
         if self.playback.as_ref().is_some_and(Playback::device_lost) {
-            self.stop_playback();
+            self.stop_ab();
             self.messages = vec![text::DEVICE_LOST.to_owned()];
         }
         self.views.poll(&ctx);
@@ -419,10 +509,64 @@ impl eframe::App for Workbench {
             }
             ctx.request_repaint_after(Duration::from_millis(50));
         }
+        if let Some(run) = &mut self.live_play {
+            let log0 = run.take.log.len();
+            run.take.drain(&mut run.queues);
+            // The widgets follow every landed change, from the list or a command (B9).
+            for e in &run.take.log[log0..] {
+                if let Some(slot) = run.readings.iter_mut().find(|(i, _)| *i == e.control) {
+                    slot.1 = workbench_core::live_play::reading_of(e.control, e.after);
+                }
+            }
+            // The refusals as they arrive, whichever tab is shown (B2).
+            let replies = run.take.take_replies(&mut run.queues).to_vec();
+            let mut refused = Vec::new();
+            for r in replies.iter().filter(|r| r.error.is_some()) {
+                refused.push(format!(
+                    "A live change was refused: {}",
+                    r.error.map_or_else(String::new, |e| e.to_string())
+                ));
+                // The widget returns to the value in force: the last landing, else the start.
+                let last = run
+                    .take
+                    .log
+                    .iter()
+                    .rev()
+                    .find(|e| e.control == r.control)
+                    .map(|e| workbench_core::live_play::reading_of(e.control, e.after))
+                    .or_else(|| {
+                        workbench_core::live_play::readings_at_start(&run.queues.start)
+                            .into_iter()
+                            .find(|(i, _)| *i == r.control)
+                            .map(|(_, v)| v)
+                    });
+                if let (Some(v), Some(slot)) =
+                    (last, run.readings.iter_mut().find(|(i, _)| *i == r.control))
+                {
+                    slot.1 = v;
+                }
+            }
+            if !refused.is_empty() {
+                self.messages = refused;
+            }
+            let st = &run.queues.state;
+            let done = st.drained.load(Ordering::Relaxed) || st.failed.load(Ordering::Relaxed);
+            let lost = run.playback.device_lost();
+            if done || lost {
+                self.stop_live_play();
+                if lost {
+                    self.messages.insert(0, text::DEVICE_LOST.to_owned());
+                }
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         if self.job.is_some() || self.playback.is_some() || self.views.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        if self.live.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        if self.live.is_none()
+            && self.live_play.is_none()
+            && ctx.input(|i| i.key_pressed(egui::Key::Space))
+        {
             self.switch();
         }
         egui::Panel::top("file").show(ui, |ui| self.file_bar(ui));
@@ -815,7 +959,7 @@ impl Workbench {
             self.switch();
         }
         if stop {
-            self.stop_playback();
+            self.stop_ab();
         }
         if export {
             self.export();
@@ -1103,6 +1247,11 @@ impl Workbench {
                 }
             }
         });
+        if self.live_play.is_some() {
+            self.live_play_view(ui);
+            ui.separator();
+        }
+        let live_playing = self.live_play.is_some();
         let Some(dev) = &mut self.device else {
             return;
         };
@@ -1148,6 +1297,7 @@ impl Workbench {
         let mut erase = None;
         let mut export = None;
         let mut play = None;
+        let mut play_live = None;
         egui::Grid::new("items").striped(true).show(ui, |ui| {
             for h in ["item", "length", "counter", "digest", ""] {
                 ui.strong(h);
@@ -1169,8 +1319,17 @@ impl Workbench {
                     if ui.small_button("readings").clicked() {
                         self.device_item = Some(it.number);
                     }
-                    if ui.small_button("play to take").clicked() {
+                    if ui
+                        .add_enabled(!live_playing, egui::Button::new("play to take").small())
+                        .clicked()
+                    {
                         play = Some(it.number);
+                    }
+                    if ui
+                        .add_enabled(!live_playing, egui::Button::new("play live").small())
+                        .clicked()
+                    {
+                        play_live = Some(it.number);
                     }
                     if ui.small_button("export…").clicked() {
                         export = Some(it.number);
@@ -1365,6 +1524,83 @@ impl Workbench {
                 }
                 Err(e) => e,
             }];
+        }
+        if let Some(n) = play_live {
+            self.start_live_play(n);
+        }
+    }
+
+    /// The live playback's controls (spec 004b D2): each change is sent to the callback and
+    /// lands at the stream's current position.
+    fn live_play_view(&mut self, ui: &mut egui::Ui) {
+        use rr_dr60::control_map::ControlReading;
+        use rr_dr60::controls::{ControlValue, controls};
+        let Some(run) = &mut self.live_play else {
+            return;
+        };
+        let st = &run.queues.state;
+        let rate = f64::from(run.queues.start.settings.host_rate_hz);
+        let mut stop = false;
+        ui.horizontal(|ui| {
+            ui.strong(format!(
+                "Playing item {} live: {:.2} s produced",
+                run.queues.start.number,
+                st.produced.load(Ordering::Relaxed) as f64 / rate
+            ));
+            if ui.button("Stop").clicked() {
+                stop = true;
+            }
+        });
+        let mut send: Vec<(u32, ControlReading)> = Vec::new();
+        egui::Grid::new("live_play_controls").show(ui, |ui| {
+            for (i, r) in run.readings.iter_mut() {
+                let Some(e) = controls().get(*i as usize) else {
+                    continue;
+                };
+                ui.label(e.identifier);
+                let before = *r;
+                match (e.value, &mut *r) {
+                    (ControlValue::Switch { .. }, ControlReading::Switch(b)) => {
+                        ui.checkbox(b, "");
+                    }
+                    (ControlValue::Integer { min, max, .. }, ControlReading::Integer(v)) => {
+                        ui.horizontal(|ui| {
+                            for k in min..=max {
+                                ui.selectable_value(v, k, k.to_string());
+                            }
+                        });
+                    }
+                    (ControlValue::Continuous { min, max, .. }, ControlReading::Continuous(v)) => {
+                        ui.add(egui::Slider::new(v, min..=max));
+                    }
+                    (ControlValue::Choice { options, .. }, ControlReading::Choice(v)) => {
+                        ui.horizontal(|ui| {
+                            for o in options {
+                                ui.selectable_value(v, o.value, o.identifier);
+                            }
+                        });
+                    }
+                    _ => {
+                        ui.label("");
+                    }
+                }
+                if *r != before {
+                    send.push((*i, *r));
+                }
+                ui.end_row();
+            }
+        });
+        for (control, r) in send {
+            let c = workbench_core::live::Command {
+                control,
+                value: workbench_core::live::value_of(r),
+            };
+            if run.queues.commands.push(c).is_err() {
+                self.messages = vec!["The command queue is full: the change was not sent".into()];
+            }
+        }
+        if stop {
+            self.stop_live_play();
         }
     }
 }

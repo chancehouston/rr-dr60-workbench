@@ -35,6 +35,34 @@ fn main() {
         drop(p);
     }
     live_check();
+    live_play_check();
+}
+
+/// The live playback path (spec 004b): a recorded tone played on a clone of the device in the
+/// output callback, with the monitor volume at 0 (nothing audible), for half a second; the
+/// player's produced count must advance.
+fn live_play_check() {
+    let rate = 48000u32;
+    let mut panel = workbench_core::panel::Panel::new(rate).unwrap();
+    let i = panel.index_of("mic.capsule_enabled").unwrap();
+    panel.set(i, rr_dr60::control_map::ControlReading::Switch(false));
+    let mut d = workbench_core::device::Device::new(panel.snapshot().0).unwrap();
+    let tone: Vec<f32> = (0..rate as usize * 2)
+        .map(|k| 0.3 * (std::f32::consts::TAU * 1000.0 * k as f32 / rate as f32).sin())
+        .collect();
+    d.record(&tone, 0, None, &[]).unwrap();
+    let (mut player, q) = d.live_player(1, &[], &[]).unwrap();
+    let shared = Arc::new(Shared::default());
+    shared.set_volume(0.0);
+    let p = playback::Playback::start_live(rate, shared, move |o| player.fill(o))
+        .expect("live playback start");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    println!(
+        "live playback at {rate} Hz: the player produced {} samples in 0.5 s (about {}), device lost {}",
+        q.state.produced.load(Ordering::Relaxed),
+        rate / 2,
+        p.device_lost()
+    );
 }
 
 /// The live path (spec 003): a fresh engine on silence (the capsule off, so nothing is audible)
@@ -64,9 +92,10 @@ fn live_check() {
         len: None,
         changes: Vec::new(),
     };
-    let (core, q) = workbench_core::live::LiveCore::new(&req, &[]).unwrap();
-    let p = playback::Playback::start_live(rate, Arc::new(Shared::default()), core)
-        .expect("live start");
+    let (mut core, q) = workbench_core::live::LiveCore::new(&req, &[]).unwrap();
+    let p =
+        playback::Playback::start_live(rate, Arc::new(Shared::default()), move |o| core.fill(o))
+            .expect("live start");
     std::thread::sleep(std::time::Duration::from_millis(500));
     println!(
         "live at {rate} Hz: the engine produced {} samples in 0.5 s (about {}), overloads 0 expected, device lost {}",
