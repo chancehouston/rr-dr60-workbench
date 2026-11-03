@@ -192,3 +192,29 @@ fn tail_is_the_engines_drain() {
         "stage 2's settle (the engine's figure)"
     );
 }
+
+/// The review of 008, W6 (reported, not asserted): in drop mode, an input that ends inside the
+/// hang (a tone, then 45 ms of silence, against the 50 ms minimum hang) lets the gate pause
+/// before the kept samples are out; it holds them until a resume that never comes, so the tail
+/// does not bring them out (the engine's documented caveat; the hang's minimum, 50 ms, already
+/// outlasts the default latency, so "a hang shorter than the latency" cannot be configured).
+#[test]
+fn tail_with_a_short_hang_is_reported() {
+    for rate in [6000, 48_000] {
+        let mut x = tone(rate, 0.5, 0.5);
+        x.resize(x.len() + rate as usize * 45 / 1000, 0.0);
+        let req = request(rate, &x, |p| {
+            set_num(p, "vas.hang_ms", 50.0);
+            set_switch(p, "speech_codec_enabled", true);
+            set_choice(p, "vas.mode", "drop");
+        });
+        let r = run(&req);
+        let want = x.len() as u64 + u64::from(r.latency_samples);
+        println!(
+            "{rate} Hz, input ending 45 ms into a 50 ms hang (latency {} samples): produced {} of {want}, held {}",
+            r.latency_samples,
+            r.samples.len(),
+            want.saturating_sub(r.samples.len() as u64)
+        );
+    }
+}

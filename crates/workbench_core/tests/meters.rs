@@ -338,3 +338,26 @@ fn table_and_device_split_are_the_engines() {
         }
     }
 }
+
+/// The review of 008, W5: a render whose log holds a route change is labelled "at the start's
+/// route"; one without is not.
+#[test]
+fn route_changes_label_the_reach() {
+    let rate = 48_000;
+    let x = tone(rate, 0.3, 0.1);
+    let plain = run(&request(rate, &x, |_| {}));
+    assert!(!workbench_core::render::route_changes(&plain));
+    let mut req = request(rate, &x, |_| {});
+    req.changes = vec![workbench_core::render::Scheduled {
+        clock: rr_dr60::changes::Clock::Output,
+        position: 4800,
+        control: rr_dr60::controls::controls()
+            .iter()
+            .position(|c| c.identifier == "route")
+            .unwrap() as u32,
+        value: 1.0,
+        tag: 1,
+    }];
+    let r = run(&req);
+    assert!(workbench_core::render::route_changes(&r));
+}

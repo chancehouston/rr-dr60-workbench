@@ -414,6 +414,9 @@ impl Views {
                 r.request.block
             ));
         });
+        if workbench_core::render::route_changes(r) {
+            ui.weak("Reach at the start's route: this render changes the route, so the speaker amplifier's clip count may be reached for only part of it.");
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, f) in FIELDS.iter().enumerate() {
                 let reached = r.meter_reach[i];

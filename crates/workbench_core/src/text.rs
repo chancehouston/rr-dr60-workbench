@@ -31,7 +31,9 @@ pub const I32_ROUNDING: &str =
     "32-bit integer samples are rounded once to 32-bit float (a conversion at the boundary)";
 /// The tail's label (D7).
 pub const TAIL_LABEL: &str = "Tail: the engine's one-pass drain, as silence after the input, so \
-every input sample is emitted and settles while the gate stays open";
+every input sample is emitted and settles while the gate stays open. In drop mode it holds only \
+while the hang outlasts it: a pause that begins before the kept samples are out holds them until \
+the next resume";
 /// Shown instead of a splice count when the gate does not run (FR-009).
 pub const GATE_NOT_REACHED: &str = "Gate not reached at this configuration";
 /// Splices (drop mode).
