@@ -15,9 +15,21 @@ publish = false
 rr_dr60 = { git = "https://github.com/chancehouston/rr-dr60-emu", rev = "a06318ca1c7ded42f46d83c34716cdfad8a59446" }
 workbench_core = { path = "crates/workbench_core" }
 eframe = "0.37"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "flac", "pcm"] }
+hound = "3.5"
+sha2 = "0.11"
+rfd = "0.17"
+coreaudio-rs = "0.14"
 
 [workspace.lints.rust]
 missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+
+# R-09: the block-size-1 oracle runs the engine at seven rates; build it optimized in tests.
+[profile.test.package.rr_dr60]
+opt-level = 3
+
+[profile.dev.package.rr_dr60]
+opt-level = 3

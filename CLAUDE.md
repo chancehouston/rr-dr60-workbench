@@ -34,5 +34,15 @@ Guidance for Claude Code working in this repository. Keep it current.
 
 ## Current status
 
-- 2026-11-02: Bootstrapped (constitution 1.0.0, the plan of record, the read-only control list,
-  CI on macOS). Engine pin `a06318c` (0.92.0). Next: feature 001, the offline render session.
+- 2026-11-02: Bootstrapped (the plan of record, CI on macOS). Engine pin `a06318c` (0.92.0).
+- 2026-11-02: **Feature 001 (the offline render session) is implemented** on `001-offline-render-session`: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed.
+
+## Lessons (001)
+
+- symphonia 0.6: route samples by the codec's `bits_per_sample`. FLAC delivers 16 and 24 bits shifted into `i32`, and WAV and AIFF at their own width. A FLAC fixture with fixed blocking needs STREAMINFO min block = max block.
+- hound writes WAVE_FORMAT_EXTENSIBLE for f32 (tag 0xFFFE, a 68-byte header). The data limit is `u32::MAX − 60`.
+- The engine's speech coder's idle output is quiet, not zero (about 1e-3 at its start). A tail bound with the coder on is the coder's own output on silence, not −100 dBFS.
+- Outputs before the latency clamp to input 0 in the engine's one-pass map, so round-trip properties hold only for unclamped outputs.
+- A reach scan by name confuses the workbench's own methods (`export`, `play`, `settings`) with the engine's. A name the workbench defines counts only as `Pipeline::name(`.
+- CoreAudio's default output unit accepts 6 – 96 kHz on its input scope and converts. `--bin playback_check` checks it silently.
+- egui 0.37: `App::ui(&mut self, ui, frame)`, `egui::Panel::{top,left}(..).show(ui, ..)`. Defer `self` calls out of `ui.horizontal` closures, because of borrows.

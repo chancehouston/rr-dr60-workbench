@@ -12,6 +12,12 @@ publish.workspace = true
 workbench_core.workspace = true
 rr_dr60.workspace = true
 eframe.workspace = true
+rfd.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs.workspace = true
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
+objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AudioUnitProperties"] }
 
 [lints]
 workspace = true

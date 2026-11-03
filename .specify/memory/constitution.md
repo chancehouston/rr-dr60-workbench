@@ -11,9 +11,12 @@ test bench (`ic-recorder-app`) continue alongside it. The plan of record is `doc
 
 - The workbench MUST NOT implement signal processing of its own on the audio path: every sound it
   plays or exports comes out of the `rr_dr60` engine. Meters, scopes, spectra and difference
-  views MAY analyse the engine's output for display, and they MUST NOT feed back into it. File
-  decoding and the output device's rate conversion at the boundary do not count as signal
-  processing of the workbench's own. Each spec that uses them MUST state them.
+  views MAY analyse the engine's output for display, and they MUST NOT feed back into it.
+  Boundary conversions do not count as signal processing of the workbench's own. They are file
+  decoding and the stated sample conversion into the engine's input, including a channel mix; and,
+  on playback only and never in an export, the monitor volume, the copy of the mono take to the
+  device's channels and the operating system's rate conversion. Each spec that uses them MUST state
+  them, and the screen MUST label them.
 - Every control the workbench shows MUST come from the engine's control manifest
   (`rr_dr60::controls()`). Every stage panel MUST come from the stage manifest (`rr_dr60::manifest()`).
   Names, kinds, timings, ranges, defaults, options, units, sentences, sources and assumptions are
@@ -28,7 +31,8 @@ from the engine, would mean evaluating the workbench instead.
 
 ### II. Everything Reachable
 
-- By the end of the plan of record, every public method of `rr_dr60::Pipeline` (81 at engine 0.92.0)
+- By the end of the plan of record, every public method of `rr_dr60::Pipeline` (70 at engine 0.92.0, not counting the engine's eleven
+  hidden `__` test hooks, which no caller can reach)
   and every `Tap` MUST be reachable from the window. Each feature MUST state which methods it brings
   into use. A test MUST compare the engine's public `Pipeline` methods with the workbench's calls
   and print the ratio.
@@ -123,4 +127,12 @@ Rationale: the repository is public, and its screenshots and notes may be quoted
   expanded principles or sections, and PATCH for clarifications.
 - Every spec, plan and pull request MUST be checked for compliance (the plan's Constitution Check).
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-02
+**Version**: 1.0.2 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-02
+
+Amendment 1.0.1 (2026-11-02, PATCH; spec 001 plan P9, P10): principle I names the boundary
+conversions (the channel mix into the engine's input; on playback only, the monitor volume, the
+copy to the device's channels and the operating system's rate conversion), and principle II counts
+74 `Pipeline` methods at 0.92.0, not counting the hidden test hooks.
+
+Amendment 1.0.2 (2026-11-02, PATCH; spec 001 implementation): the count is 70, not 74. The engine has
+eleven hidden test hooks, not seven (81 − 11), as the reach test counts them.

@@ -12,9 +12,15 @@ assumptions; nothing has been checked against a real unit (see the engine's READ
 
 ## Status
 
-Bootstrap. The window lists the engine's control manifest grouped by stage. Features arrive in the
-order of [docs/workbench-plan.md](docs/workbench-plan.md): offline render sessions, taps and scopes,
-the live engine, the record and play paths, processing records and comparisons.
+**Feature 001, the offline render session:**
+
+- **Open** a WAV, AIFF or FLAC file at one of the engine's rates (6, 8, 16, 44.1, 48, 88.2 or 96 kHz). Pick a channel or the labelled mix.
+- **Edit** every one of the engine's controls in a panel the engine itself describes and checks.
+- **Render** through a fresh one-pass engine, with a tail so that the whole input comes out. The session shows the latency, splices, samples not emitted and peak.
+- **Play** the original and the render with an instant A/B switch at the same moment of content, through the engine's own position map. Playback is macOS only for now.
+- **Export** the render unaltered, as 32-bit float WAV, with a sidecar that reproduces it bit for bit when it is reopened with the same input.
+
+Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): taps and scopes, the live engine, the record and play paths, processing records and comparisons.
 
 ## Build and run
 
@@ -24,7 +30,13 @@ Requires Rust stable (edition 2024). The engine is fetched from GitHub at a pinn
 cargo run --release -p rr_dr60_workbench
 ```
 
-macOS is the first target. egui runs on Windows and Linux too, untested so far.
+macOS is the first target. Rendering and export are portable; playback uses CoreAudio and is
+macOS only in this version. egui runs on Windows and Linux too, untested so far.
+
+Desk files for trying it out: `cargo run -p workbench_core --example desk_files -- out/desk`.
+
+Dependencies: the decoder, [symphonia](https://github.com/pdeljanov/Symphonia), is MPL-2.0
+(file-level copyleft, used unmodified as a library); everything else is MIT or Apache-2.0.
 
 ## Development
 
