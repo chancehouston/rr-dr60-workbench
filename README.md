@@ -20,7 +20,17 @@ assumptions; nothing has been checked against a real unit (see the engine's READ
 - **Play** the original and the render with an instant A/B switch at the same moment of content, through the engine's own position map. Playback is macOS only for now.
 - **Export** the render unaltered, as 32-bit float WAV, with a sidecar that reproduces it bit for bit when it is reopened with the same input.
 
-Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): taps and scopes, the live engine, the record and play paths, processing records and comparisons.
+**Feature 002, taps, scopes and meters:**
+
+- **Meters**: every engine meter over time at 10 ms resolution, with each field's unit and kind, and figures the configuration does not reach greyed out.
+- **Waveforms**: the original and the render, aligned through the engine's map, with removed pauses and muted regions marked.
+- **Spectra**: Welch spectra at 5 Hz bins, calibrated to a full-scale sine, and their ratio.
+- **Spectrogram**: of either take.
+- **Tap browser**: renders the input at every tap.
+- **Stages**: the engine's stage manifest, verbatim.
+- **CSV exports**: each with the render's sidecar beside it.
+
+Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): the live engine, the record and play paths, processing records and comparisons.
 
 ## Build and run
 

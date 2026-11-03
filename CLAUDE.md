@@ -35,7 +35,16 @@ Guidance for Claude Code working in this repository. Keep it current.
 ## Current status
 
 - 2026-11-02: Bootstrapped (the plan of record, CI on macOS). Engine pin `a06318c` (0.92.0).
-- 2026-11-02: **Feature 001 (the offline render session) is implemented** on `001-offline-render-session`: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed.
+- 2026-11-02: **Feature 001 (the offline render session) is merged** (PR #2, merge commit 8afbced, CI green; merged by the agent under the autopilot rule, the owner's desk checklist pending): 54 tests after the post-implementation reviews and convergence (T038, streaming decode). Before that: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed. The core `Session` holds the rules of opening a file, attaching a render and restoring a sidecar. Next: feature 002 (taps, scopes and meters) on `002-taps-scopes-meters`.
+- 2026-11-02: **Feature 002 is implemented** on its branch: 77 tests, reach 14/70, figures in `specs/002-taps-scopes-meters/records.md`, engine issue #75 (the meter table).
+
+## Lessons (002)
+
+- Bins of 5 Hz (N = rate ÷ 5) put 1 kHz on bin 200 at every rate. A power-of-two size reads −0.63 dB from scalloping.
+- `Meters` is `#[non_exhaustive]`: read its field names from `Debug`. `rest_meters()` carries the battery factor, and `Meters::default()` carries 0.0.
+- A reach rule is pinned both ways: an unreached field must stay at rest in every row, and a reached one must move, with the one measured exception stated (the earphone output clamp).
+- The reach scan counts a name the workbench also defines (`meters`, `settings`) only as `Pipeline::name(`. Call such engine methods in that form.
+- `egui::Id::new` is deprecated in egui 0.37, and `link_axis` needs an `Id`. Drop the link rather than reach for a deprecated call.
 
 ## Lessons (001)
 

@@ -66,3 +66,41 @@ pub fn to_original(o: u64, r: &Render, mode: AbMode, input_len: u64) -> u64 {
         rr_dr60::timeline::onepass_output_to_input(o, r.latency_samples, &r.events, r.drop_mode);
     i.min(input_len)
 }
+
+/// A removed pause (drop mode) or a muted region (mute mode), for the waveform's marks (D5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    /// The render position of the splice (drop) or the region's first muted sample (mute).
+    pub output_position: u64,
+    /// The original positions it covers, `[start, end)`.
+    pub input_span: (u64, u64),
+    /// Drop mode (a removed pause) or mute mode (a muted region).
+    pub removed: bool,
+}
+
+/// The render's marks, from its reports and the engine's map.
+pub fn marks(r: &Render) -> Vec<Mark> {
+    let l = u64::from(r.latency_samples);
+    let mut before = 0u64;
+    r.events
+        .iter()
+        .map(|e| {
+            if r.drop_mode {
+                let start = (e.output_position + before).saturating_sub(l);
+                before += e.input_length;
+                Mark {
+                    output_position: e.output_position,
+                    input_span: (start, start + e.input_length),
+                    removed: true,
+                }
+            } else {
+                let start = e.output_position.saturating_sub(l);
+                Mark {
+                    output_position: e.output_position,
+                    input_span: (start, start + e.input_length),
+                    removed: false,
+                }
+            }
+        })
+        .collect()
+}

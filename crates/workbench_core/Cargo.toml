@@ -13,6 +13,7 @@ rr_dr60.workspace = true
 symphonia.workspace = true
 hound.workspace = true
 sha2.workspace = true
+rustfft.workspace = true
 
 [lints]
 workspace = true

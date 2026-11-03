@@ -39,3 +39,28 @@ fn no_clock_or_os_randomness() {
         }
     }
 }
+
+#[test]
+fn analysis_only_reads() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for f in [
+        "analysis/spectrum.rs",
+        "analysis/envelope.rs",
+        "analysis/spectrogram.rs",
+        "meters.rs",
+    ] {
+        let s = std::fs::read_to_string(root.join(f)).unwrap();
+        for banned in [
+            "Pipeline",
+            "fresh_engine(",
+            "process_with_events(",
+            "set_control_value(",
+            "export::",
+        ] {
+            assert!(
+                !s.contains(banned),
+                "{f} must only read samples, but uses {banned}"
+            );
+        }
+    }
+}

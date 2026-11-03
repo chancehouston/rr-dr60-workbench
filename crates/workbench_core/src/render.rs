@@ -11,8 +11,12 @@ use rr_dr60::{Error, Pipeline, Settings, Tap, VasEvent, VasMode};
 
 use crate::input::{self, Channel};
 
-/// The render's block size (recorded in the sidecar).
-pub const BLOCK: usize = 4096;
+/// The render's block for a rate: 10 ms of host samples (spec 002 D1). 100 is the seven rates'
+/// greatest common divisor, so every call carries exactly 60 device samples. The output does
+/// not depend on the block (001's oracles); the block sets the meter timeline's resolution.
+pub const fn block_for(rate_hz: u32) -> usize {
+    (rate_hz / 100) as usize
+}
 
 /// What a render is made from: a snapshot taken at Render (data-model "RenderRequest").
 #[derive(Clone, Debug)]
@@ -56,6 +60,8 @@ pub struct Render {
     pub latency_samples: u32,
     /// The engine's playback drain (part of the tail's figure).
     pub drain_samples: u32,
+    /// The engine's playback-side latency (the guard around splices in spectra; post-impl B3).
+    pub playback_latency_samples: u32,
     /// Splices (drop mode) or muted regions (mute mode): Σ `BlockInfo.events`.
     pub splices_or_regions: u64,
     /// The engine's reports, positions from the start of the render.
@@ -74,6 +80,8 @@ pub struct Render {
     pub output_sha256: [u8; 32],
     /// The engine's footprint.
     pub footprint_bytes: usize,
+    /// The meter timeline (spec 002 D1): the rest read-out, then one row per call.
+    pub meters: Vec<crate::meters::MeterRow>,
 }
 
 /// Whether the voice-activation gate runs for `s` — the engine's own rule, quoted because the
@@ -96,6 +104,16 @@ pub fn gate_reached(s: &Settings) -> bool {
 }
 
 impl RenderRequest {
+    /// The staleness predicate (001 D5), shared by renders and the tap table: the input, the
+    /// channel, the tail switch, the settings or the engine values differ.
+    pub fn differs(&self, other: &RenderRequest) -> bool {
+        self.input_sha256 != other.input_sha256
+            || self.channel != other.channel
+            || self.tail != other.tail
+            || self.settings != other.settings
+            || self.engine_values != other.engine_values
+    }
+
     /// The request for `input` with `panel`'s values (the session's one constructor).
     pub fn new(input: &input::Input, panel: &crate::panel::Panel, tail: bool) -> Self {
         let (settings, engine_values) = panel.snapshot();
@@ -110,7 +128,7 @@ impl RenderRequest {
             settings,
             engine_values,
             tail,
-            block: BLOCK,
+            block: block_for(input.rate_hz),
         }
     }
 }
@@ -159,6 +177,7 @@ pub fn render(
     let mut p = fresh_engine(req)?;
     let latency = p.latency_samples();
     let drain = p.drain_samples();
+    let playback_latency = p.playback_latency_samples();
     let tail = if req.tail { tail_for(&p) } else { 0 };
     let block = req.block.max(1);
     let total = req.input.len() as u64 + tail;
@@ -170,6 +189,14 @@ pub fn render(
     let mut fed = 0u64;
     let mut count = 0u64;
     let mut paused = false;
+    let input_len = req.input.len() as u64;
+    let mut meters = Vec::with_capacity((total / block as u64 + 2) as usize);
+    meters.push(crate::meters::MeterRow {
+        meters: p.rest_meters(),
+        in_span: (0, 0),
+        out_span: (0, 0),
+        tail: false,
+    });
     while fed < total {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
@@ -182,7 +209,14 @@ pub fn render(
         }
         ibuf[have..n].fill(0.0);
         let info = p.process_with_events(&ibuf[..n], &mut obuf[..n], &mut ebuf)?;
+        let out0 = out.len() as u64;
         out.extend_from_slice(&obuf[..info.produced]);
+        meters.push(crate::meters::MeterRow {
+            meters: Pipeline::meters(&p),
+            in_span: (fed, fed + n as u64),
+            out_span: (out0, out.len() as u64),
+            tail: fed >= input_len && n > 0,
+        });
         events.extend_from_slice(&ebuf[..info.events]);
         count += info.events as u64;
         paused = info.paused;
@@ -198,6 +232,7 @@ pub fn render(
         tail_samples: tail,
         latency_samples: latency,
         drain_samples: drain,
+        playback_latency_samples: playback_latency,
         splices_or_regions: count,
         events,
         drop_mode: req.settings.vas.mode == VasMode::Drop,
@@ -207,17 +242,13 @@ pub fn render(
         peak,
         output_sha256,
         footprint_bytes: p.footprint_bytes(),
+        meters,
     }))
 }
 
 impl Render {
     /// True when the session's current values differ from the render's (D5).
     pub fn is_stale(&self, current: &RenderRequest) -> bool {
-        let a = &self.request;
-        a.input_sha256 != current.input_sha256
-            || a.channel != current.channel
-            || a.tail != current.tail
-            || a.settings != current.settings
-            || a.engine_values != current.engine_values
+        self.request.differs(current)
     }
 }

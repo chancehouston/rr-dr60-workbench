@@ -13,7 +13,7 @@ engine.version 0.92.0
 engine.commit a06318ca1c7ded42f46d83c34716cdfad8a59446
 conversion 1
 recording_counter 0
-block 4096
+block 480                      # informational: the render's block (rate ÷ 100 since 002; 4096 in 001); the output does not depend on it
 tail on                        # the switch: on or off
 tail_samples 6128
 channel 1                      # 1-based; or: channel mix

@@ -6,6 +6,7 @@
 //! (its `Session` holds the rules); this file is the thin egui view (constitution V).
 
 mod playback;
+mod views;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,6 +59,7 @@ struct Workbench {
     monitor_volume: f32,
     int_edits: HashMap<u32, String>,
     messages: Vec<String>,
+    views: views::Views,
 }
 
 impl Workbench {
@@ -73,6 +75,7 @@ impl Workbench {
             monitor_volume: 1.0,
             int_edits: HashMap::new(),
             messages: Vec::new(),
+            views: views::Views::default(),
         }
     }
 
@@ -297,7 +300,8 @@ impl eframe::App for Workbench {
             self.stop_playback();
             self.messages = vec![text::DEVICE_LOST.to_owned()];
         }
-        if self.job.is_some() || self.playback.is_some() {
+        self.views.poll(&ctx);
+        if self.job.is_some() || self.playback.is_some() || self.views.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
@@ -308,7 +312,37 @@ impl eframe::App for Workbench {
             .resizable(true)
             .default_size(560.0)
             .show(ui, |ui| self.controls_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.session_view(ui, &ctx));
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (t, name) in [
+                    (views::Tab::Session, "Session"),
+                    (views::Tab::Scopes, "Scopes"),
+                    (views::Tab::Meters, "Meters"),
+                    (views::Tab::Taps, "Taps"),
+                    (views::Tab::Stages, "Stages"),
+                ] {
+                    ui.selectable_value(&mut self.views.tab, t, name);
+                }
+            });
+            for m in &self.views.messages {
+                ui.label(m);
+            }
+            ui.separator();
+            let playhead = self.playback.as_ref().map(|_| self.shared.cursor());
+            let playhead = playhead.and_then(|(t, p)| match t {
+                Take::Original => Some(p),
+                Take::Render => self.session.render().map(|r| {
+                    ab::to_original(p, r, AbMode::EngineMap, r.request.input.len() as u64)
+                }),
+            });
+            match self.views.tab {
+                views::Tab::Session => self.session_view(ui, &ctx),
+                views::Tab::Scopes => self.views.scopes(ui, &self.session, playhead),
+                views::Tab::Meters => self.views.meters(ui, &self.session),
+                views::Tab::Taps => self.views.taps(ui, &self.session),
+                views::Tab::Stages => self.views.stages(ui),
+            }
+        });
     }
 }
 
