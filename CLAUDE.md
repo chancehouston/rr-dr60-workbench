@@ -46,6 +46,20 @@ Guidance for Claude Code working in this repository. Keep it current.
   - `ControlReading`'s equality already treats −0.0 as 0.0.
   - `components::parameter_at` is crate-private: restore the slot by `components::components()` offsets.
   Figures in `specs/005-processing-records/records.md`. Next: 005b (comparisons and presets).
+- 2026-11-03: **Feature 005b (comparisons and presets) is merged** (PR #12, merge commit 1f5cfe1, CI green; under the autopilot rule, the owner's desk checklist pending): 169 tests, reach 51/70.
+  - **What it adds**:
+    - Keep as B, and a Compare tab with three comparisons: a parameter diff by identifier; a null test, latency-aligned or at sample 0, over the overlap and its prefix to the first gate difference; a spectral difference B ÷ A.
+    - B as a third A/B take, switched through the input.
+    - Presets restored by the sidecar's control rules (`sidecar::restore_controls`).
+  - **The oracle**: the engine's earphone gain law to 6.1e-5 dB within 60 dB of both maxima. The 120 dB window reaches the f32 narrowing floor, 0.04 dB.
+  - **Engine issue #78**: the one-pass gate reports exclude the coder's delay, and the latency rule is crate-private. The workbench mirrors it in `render::codec_delay`.
+  - **Lessons**:
+    - A pause still open at the end reports no splice, so a null over the overlap reads "identical" for a much shorter render. Compare `paused_at_end` too.
+    - The coder decides in frames, so a codec-on difference begins up to a frame before the splice reaches the output. End a prefix before the coder's delay.
+    - A live take's skips are device silence only: the take itself is continuous engine output.
+    - A helper named like an engine method (`input_position`) hides the engine's call from the reach scan.
+    - A tolerance claimed over a 120 dB window must survive the f32 floor: reproduce it per rate before stating it.
+  - Figures in `specs/005b-comparisons-presets/records.md`. Next: 006 (the coverage close-out) or 007 (microphone), per the plan of record.
 
 ## Lessons (004b)
 
