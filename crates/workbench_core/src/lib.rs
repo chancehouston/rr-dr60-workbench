@@ -7,6 +7,7 @@
 
 pub mod ab;
 pub mod analysis;
+pub mod capture;
 pub mod csv;
 pub mod device;
 pub mod export;

@@ -5,6 +5,7 @@
 //! export the render with its sidecar and reopen a sidecar. The logic is in `workbench_core`
 //! (its `Session` holds the rules); this file is the thin egui view (constitution V).
 
+mod capture;
 mod playback;
 mod views;
 
@@ -78,6 +79,22 @@ struct ReRenderJob {
     note: Option<String>,
 }
 
+/// A capture from the default input (spec 007): the input unit with the core in its callback,
+/// the monitor's output unit, the UI's queue ends and the take being assembled.
+struct CaptureRun {
+    capture: capture::Capture,
+    monitor: Option<Playback>,
+    queues: workbench_core::live::LiveQueues,
+    take: workbench_core::live::TakeBuilder,
+    start_req: workbench_core::render::RenderRequest,
+    gaps: Arc<workbench_core::capture::GapCounter>,
+    underruns: Arc<AtomicU64>,
+    silence: workbench_core::capture::SilenceWatch,
+    seen: usize,
+    latency: u32,
+    note: Option<String>,
+}
+
 /// A live playback on a clone of the device (spec 004b).
 struct LivePlay {
     playback: Playback,
@@ -111,6 +128,9 @@ struct Workbench {
     record: Option<OpenedRecord>,
     check_item: u32,
     rerender: Option<ReRenderJob>,
+    capture: Option<CaptureRun>,
+    capture_channel: Channel,
+    capture_monitor: bool,
 }
 
 impl Workbench {
@@ -141,6 +161,9 @@ impl Workbench {
             record: None,
             check_item: 1,
             rerender: None,
+            capture: None,
+            capture_channel: Channel::Index(0),
+            capture_monitor: false,
         }
     }
 
@@ -289,8 +312,256 @@ impl Workbench {
     /// Stops every output stream: a live playback and the A/B (spec 004b D7), before another
     /// stream starts or the input changes.
     fn stop_playback(&mut self) {
+        self.stop_capture(None);
         self.stop_live_play();
         self.stop_ab();
+    }
+
+    /// Starts a capture from the default input (spec 007 D1 – D4).
+    fn start_capture(&mut self) {
+        self.stop_playback();
+        self.stop_live();
+        let dev = match capture::default_input() {
+            Ok(d) => d,
+            Err(e) => {
+                self.messages = vec![e];
+                return;
+            }
+        };
+        if let Some(why) = workbench_core::capture::rate_refusal(dev.rate) {
+            self.messages = vec![format!(
+                "{why} (a Bluetooth headset's microphone runs at 16 or 24 kHz)"
+            )];
+            return;
+        }
+        let rate = dev.rate as u32;
+        let (req, note) =
+            match workbench_core::live::capture_start_request(self.session.panel(), rate) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.messages = vec![e.to_string()];
+                    return;
+                }
+            };
+        let channel = match self.capture_channel {
+            Channel::Index(i) if usize::from(i) >= dev.channels => Channel::Index(0),
+            Channel::Mix if dev.channels == 1 => Channel::Index(0),
+            c => c,
+        };
+        let list: Vec<(rr_dr60::changes::Clock, u64, u32, f64)> = self
+            .schedule
+            .iter()
+            .map(|&(control, value, t)| {
+                let clock =
+                    rr_dr60::changes::clock_of(control).unwrap_or(rr_dr60::changes::Clock::Output);
+                (clock, (t * f64::from(rate)).round() as u64, control, value)
+            })
+            .collect();
+        let (core, mut queues) = match workbench_core::live::LiveCore::new_capture(
+            &req,
+            &list,
+            dev.channels,
+            channel,
+            self.capture_monitor,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                self.messages = vec![e.to_string()];
+                return;
+            }
+        };
+        let latency = render::fresh_engine(&req).map_or(0, |p| p.latency_samples());
+        let underruns = Arc::new(AtomicU64::new(0));
+        let monitor = match queues.monitor.take() {
+            None => None,
+            Some(mut q) => {
+                let state = queues.state.clone();
+                let under = underruns.clone();
+                let block = render::block_for(rate);
+                let (target, ceiling) = (rate as usize / 50, rate as usize / 10);
+                let mut ms = workbench_core::capture::MonitorState::default();
+                match Playback::start_live(rate, self.shared.clone(), move |o| {
+                    workbench_core::capture::monitor_fill(
+                        &mut q,
+                        o,
+                        &mut ms,
+                        target,
+                        ceiling,
+                        block,
+                        state.paused.load(Ordering::Relaxed),
+                        &under,
+                        &state.monitor_drops,
+                    );
+                }) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        self.messages = vec![e];
+                        return;
+                    }
+                }
+            }
+        };
+        let gaps = Arc::new(workbench_core::capture::GapCounter::default());
+        match capture::Capture::start(dev, core, gaps.clone()) {
+            Ok(c) => {
+                self.messages = note.iter().cloned().collect();
+                self.capture = Some(CaptureRun {
+                    capture: c,
+                    monitor,
+                    queues,
+                    take: workbench_core::live::TakeBuilder::default(),
+                    start_req: req,
+                    gaps,
+                    underruns,
+                    silence: workbench_core::capture::SilenceWatch::new(rate),
+                    seen: 0,
+                    latency,
+                    note,
+                });
+            }
+            Err(e) => self.messages = vec![e],
+        }
+    }
+
+    /// Stops the capture (spec 007 D5): the input unit first, then the queues drained; the
+    /// capture written and opened as the session's input, the take accepted. `why` heads the
+    /// messages (a lost device, the length limit).
+    fn stop_capture(&mut self, why: Option<&str>) {
+        let Some(mut run) = self.capture.take() else {
+            return;
+        };
+        drop(run.capture);
+        drop(run.monitor);
+        run.take.drain(&mut run.queues);
+        let mut m: Vec<String> = why.iter().map(|w| (*w).to_owned()).collect();
+        let state = &run.queues.state;
+        let rate = run.start_req.rate_hz;
+        if run.take.captured.is_empty() {
+            m.push("Stopped before the first 10 ms chunk: no take".into());
+            self.messages = m;
+            return;
+        }
+        let gaps = run.gaps.gaps.load(Ordering::Relaxed);
+        if gaps > 0 {
+            m.push(format!(
+                "The input device lost {} frames in {gaps} gaps (the take reproduces; the room's sound has holes there)",
+                run.gaps.missing.load(Ordering::Relaxed)
+            ));
+        }
+        m.push(format!(
+            "The engine's last {} samples ({:.1} ms, its latency) are not in the take: the tail is off",
+            run.latency,
+            f64::from(run.latency) * 1000.0 / f64::from(rate)
+        ));
+        let incomplete = state.incomplete.load(Ordering::Relaxed);
+        let req = run.take.capture_request(&run.start_req);
+        let dir = workbench_core::capture::folder();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            m.push(format!("{}: {e}", text::OPEN_IO));
+            self.messages = m;
+            return;
+        }
+        let path = workbench_core::capture::next_path(&dir);
+        let wav = workbench_core::live::capture_wav(&run.take.captured, rate);
+        if let Err(e) = std::fs::write(&path, &wav) {
+            m.push(format!("{}: {e}", text::OPEN_IO));
+            self.messages = m;
+            return;
+        }
+        let mut req = req;
+        req.file_name = path
+            .file_name()
+            .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+        match run.take.finish(&req, state) {
+            Ok(take) => {
+                let n = take.samples.len();
+                match self.session.accept_capture(&path, take) {
+                    Ok(true) => {
+                        m.push(format!(
+                            "Captured {} input samples into {} ({n} output samples). The capture replaced the open file; its render and B are dropped.",
+                            req.frames,
+                            path.display()
+                        ));
+                        if incomplete {
+                            m.push(text::LIVE_INCOMPLETE.to_owned());
+                        }
+                    }
+                    Ok(false) => m.push("The take did not match the capture file".into()),
+                    Err(e) => m.push(e.to_string()),
+                }
+                self.int_edits.clear();
+            }
+            Err(e) => m.push(e.to_string()),
+        }
+        self.messages = m;
+    }
+
+    /// The capture's section of the Session tab (spec 007).
+    fn capture_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Capture from the Mac's default input (spec 007)");
+        let idle = self.live.is_none() && self.live_play.is_none();
+        ui.horizontal(|ui| {
+            ui.label("channel");
+            let label = |c: Channel| match c {
+                Channel::Index(i) => format!("{}", i + 1),
+                Channel::Mix => "mix (the mean, a boundary conversion)".to_owned(),
+            };
+            egui::ComboBox::from_id_salt("capture_channel")
+                .selected_text(label(self.capture_channel))
+                .show_ui(ui, |ui| {
+                    for i in 0..8u16 {
+                        ui.selectable_value(&mut self.capture_channel, Channel::Index(i), label(Channel::Index(i)));
+                    }
+                    ui.selectable_value(&mut self.capture_channel, Channel::Mix, label(Channel::Mix));
+                });
+            ui.add_enabled(
+                self.capture.is_none(),
+                egui::Checkbox::new(&mut self.capture_monitor, "Monitor"),
+            )
+            .on_hover_text("Plays the engine's output on the default output device. Use headphones: the microphone hears the speakers. A Bluetooth headset's microphone may switch its output to the headset profile.");
+            if self.capture.is_none() {
+                if ui.add_enabled(idle, egui::Button::new("Capture")).clicked() {
+                    self.start_capture();
+                }
+            } else if ui.button("Stop capture").clicked() {
+                self.stop_capture(None);
+            }
+            if let Some(p) = self.session.path().map(Path::to_path_buf)
+                && p.starts_with(workbench_core::capture::folder())
+                && ui.button("Save capture…").clicked()
+                && let Some(to) = rfd::FileDialog::new()
+                    .set_file_name(p.file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned()))
+                    .save_file()
+            {
+                self.messages = vec![match std::fs::copy(&p, &to) {
+                    Ok(_) => format!("Saved the capture as {}", to.display()),
+                    Err(e) => format!("{}: {e}", text::OPEN_IO),
+                }];
+            }
+        });
+        if let Some(run) = &self.capture {
+            let st = &run.queues.state;
+            let d = run.capture.device();
+            ui.label(format!(
+                "{} · {} Hz · {} ch · fed {} ({:.1} s) · gaps {} · monitor drops {} · underruns {}{}",
+                d.name,
+                d.rate,
+                d.channels,
+                st.fed.load(Ordering::Relaxed),
+                st.fed.load(Ordering::Relaxed) as f64 / d.rate,
+                run.gaps.gaps.load(Ordering::Relaxed),
+                st.monitor_drops.load(Ordering::Relaxed),
+                run.underruns.load(Ordering::Relaxed),
+                if st.incomplete.load(Ordering::Relaxed) { " · incomplete" } else { "" }
+            ));
+            if let Some(n) = &run.note {
+                ui.label(n);
+            }
+            if run.silence.silent() {
+                ui.label("The input is digital silence: check the microphone permission (System Settings → Privacy & Security → Microphone, for the app the workbench runs from)");
+            }
+        }
     }
 
     /// Stops the A/B playback only (spec 004b review B4: a finished render does not end a
@@ -532,6 +803,29 @@ impl eframe::App for Workbench {
             self.messages = vec![text::DEVICE_LOST.to_owned()];
         }
         self.views.poll(&ctx);
+        if let Some(run) = &mut self.capture {
+            run.take.drain(&mut run.queues);
+            let new = &run.take.captured[run.seen..];
+            run.silence.observe(new);
+            run.seen = run.take.captured.len();
+            let lost = run.capture.lost();
+            let failed = run.queues.state.failed.load(Ordering::Relaxed);
+            // The export's limit (coach review 9): stop at it.
+            let full = export::check_size(
+                run.take.captured.len() as u64 + 10 * u64::from(run.start_req.rate_hz),
+            )
+            .is_err();
+            if let Some(why) = lost {
+                self.stop_capture(Some(why));
+            } else if failed {
+                self.stop_capture(Some("The engine refused a chunk: the capture stopped"));
+            } else if full {
+                self.stop_capture(Some(
+                    "The capture reached the WAV export's limit and stopped",
+                ));
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         if let Some(run) = &mut self.live {
             run.take.drain(&mut run.queues);
             // Stop once every sample has been played (B11), on a failure (B2) or a lost device.
@@ -1123,6 +1417,7 @@ impl Workbench {
         }
         ui.separator();
         self.live_section(ui);
+        self.capture_section(ui);
         if ui.button("Export render…").clicked() {
             export = true;
         }

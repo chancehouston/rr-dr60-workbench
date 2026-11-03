@@ -196,6 +196,11 @@ mod mac {
     }
 }
 
+// Used by the capture (spec 007); the device check binary includes this module without it.
+#[cfg(target_os = "macos")]
+#[allow(unused_imports)]
+pub use mac::{device_alive, nominal_rate};
+
 /// Playback, or the reason it is unavailable.
 pub struct Playback {
     #[cfg(target_os = "macos")]
