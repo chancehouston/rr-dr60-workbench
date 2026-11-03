@@ -163,16 +163,27 @@ impl Due {
         n: u64,
         refused: &mut dyn FnMut(u64, Error),
     ) {
-        let in_end = p.input_position(Stream::OnePass).unwrap_or(0) + n;
-        let out_end = p.stream_position(Stream::OnePass).unwrap_or(0) + n;
+        self.feed_on(p, Stream::OnePass, list, n, refused);
+    }
+
+    /// [`feed`](Self::feed) on any stream (spec 004: the recorder's input clock, the player's
+    /// output clock). A clock the stream does not have reads 0.
+    pub fn feed_on(
+        &mut self,
+        p: &mut Pipeline,
+        stream: Stream,
+        list: &[Scheduled],
+        n: u64,
+        refused: &mut dyn FnMut(u64, Error),
+    ) {
+        let in_end = p.input_position(stream).unwrap_or(0) + n;
+        let out_end = p.stream_position(stream).unwrap_or(0) + n;
         while let Some(&i) = self.input.get(self.next_in) {
             let c = list[i];
             if c.position >= in_end {
                 break;
             }
-            if let Err(e) =
-                p.schedule_change(Stream::OnePass, c.position, c.control, c.value, c.tag)
-            {
+            if let Err(e) = p.schedule_change(stream, c.position, c.control, c.value, c.tag) {
                 refused(c.tag, e);
             }
             self.next_in += 1;
@@ -182,9 +193,7 @@ impl Due {
             if c.position >= out_end {
                 break;
             }
-            if let Err(e) =
-                p.schedule_change(Stream::OnePass, c.position, c.control, c.value, c.tag)
-            {
+            if let Err(e) = p.schedule_change(stream, c.position, c.control, c.value, c.tag) {
                 refused(c.tag, e);
             }
             self.next_out += 1;

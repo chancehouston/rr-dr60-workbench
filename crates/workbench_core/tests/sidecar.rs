@@ -36,9 +36,15 @@ fn values_roundtrip() {
     for (id, v) in ends {
         let mut p = Panel::new(rate).unwrap();
         let i = p.index_of(&id).unwrap();
-        if !p.set(i, v) || !p.renderable() {
+        // A live control the one-pass does not run (the playback speed) is not carried by a
+        // one-pass sidecar (the playback sidecar of spec 004 records it): skipped.
+        let engine_only = p.row(&id).is_some_and(|r| {
+            r.status == workbench_core::panel::RowStatus::NotOnOnePass
+                && r.class == workbench_core::panel::ControlClass::EngineControl
+        });
+        if engine_only || !p.set(i, v) || !p.renderable() {
             skipped.push(id.clone());
-            continue; // read-only, not on the one-pass, or an end the whole check refuses
+            continue;
         }
         let r = run(&request_for(&inp, &p, true));
         let text = sidecar::write(&r);
@@ -61,14 +67,10 @@ fn values_roundtrip() {
     println!("skipped controls: {skipped:?}");
     assert_eq!(
         skipped,
-        [
-            "memory.capacity_s",
-            "memory.max_recordings",
-            "playback_speed"
-        ],
-        "the skipped range ends"
+        ["playback_speed"],
+        "the skipped range ends (the memory controls round-trip since spec 004)"
     );
-    assert_eq!(tested + 6, total);
+    assert_eq!(tested + 2, total);
     // A non-default switch and choice round-trip too (coach 11).
     let mut p = Panel::new(rate).unwrap();
     set_switch(&mut p, "speech_codec_enabled", false);

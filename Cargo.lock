@@ -2917,6 +2917,7 @@ dependencies = [
  "objc2-core-audio",
  "rfd",
  "rr_dr60",
+ "sha2",
  "workbench_core",
 ]
 

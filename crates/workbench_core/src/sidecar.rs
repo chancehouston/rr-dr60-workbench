@@ -113,7 +113,7 @@ pub fn fmt_f32(v: f32) -> String {
     format!("{v} 0x{:08x}", v.to_bits())
 }
 
-fn fmt_reading(r: ControlReading) -> String {
+pub(crate) fn fmt_reading(r: ControlReading) -> String {
     match r {
         ControlReading::Switch(b) => if b { "on" } else { "off" }.to_owned(),
         ControlReading::Integer(i) => i.to_string(),
@@ -124,7 +124,9 @@ fn fmt_reading(r: ControlReading) -> String {
 
 /// Parses a change line's value: `<in|out> <position> <identifier> <decimal> 0x<f64 bits> <tag>`
 /// (spec 003 D5): the bits rule, the decimal must agree, and the tag is at least 1.
-fn parse_change(v: &str) -> Result<(rr_dr60::changes::Clock, u64, String, f64, u64), String> {
+pub(crate) fn parse_change(
+    v: &str,
+) -> Result<(rr_dr60::changes::Clock, u64, String, f64, u64), String> {
     let f: Vec<&str> = v.split(' ').collect();
     let [clock, pos, id, dec, bits, tag] = f.as_slice() else {
         return Err(format!("a change line has six fields, got `{v}`"));
@@ -171,7 +173,7 @@ fn parse_f32(v: &str) -> Result<f32, String> {
     Ok(value)
 }
 
-fn parse_reading(v: &str, ty: &ControlValue) -> Result<ControlReading, String> {
+pub(crate) fn parse_reading(v: &str, ty: &ControlValue) -> Result<ControlReading, String> {
     let int = |s: &str| {
         if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
             Err(format!("bad integer `{s}`"))
@@ -439,11 +441,6 @@ pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
         }
         if reading == row.value {
             rep.applied += 1;
-            continue;
-        }
-        if row.status == RowStatus::NotOnOnePass {
-            rep.refused
-                .push((id.to_owned(), crate::text::NOT_ON_ONE_PASS.to_owned()));
             continue;
         }
         if let ControlValue::Choice { options, .. } = row.entry.value

@@ -176,7 +176,9 @@ impl Panel {
         let Some(row) = self.rows.get_mut(index as usize) else {
             return false;
         };
-        if matches!(row.status, RowStatus::ReadOnly | RowStatus::NotOnOnePass) {
+        // Read-only rows (the host rate) refuse. Rows not on the one-pass are settable since spec
+        // 004: the device's memory and playback use them, and a one-pass render ignores them.
+        if row.status == RowStatus::ReadOnly {
             return false;
         }
         row.value = value;
@@ -189,7 +191,7 @@ impl Panel {
     pub fn set_many(&mut self, values: &[(u32, ControlReading)]) {
         for &(index, value) in values {
             if let Some(row) = self.rows.get_mut(index as usize)
-                && !matches!(row.status, RowStatus::ReadOnly | RowStatus::NotOnOnePass)
+                && row.status != RowStatus::ReadOnly
             {
                 row.value = value;
             }

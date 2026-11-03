@@ -31,6 +31,8 @@ pub enum Tab {
     Taps,
     /// The stage manifest.
     Stages,
+    /// The device: the recorder, the memory, playback to a take (spec 004).
+    Device,
 }
 
 struct Running<T> {
