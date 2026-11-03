@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+# The window; `playback_check` is the device check (`--bin playback_check`).
+default-run = "rr_dr60_workbench"
 publish.workspace = true
 
 [dependencies]
