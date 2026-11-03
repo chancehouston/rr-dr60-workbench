@@ -8,6 +8,7 @@
 pub mod ab;
 pub mod analysis;
 pub mod capture;
+pub mod checks;
 pub mod csv;
 pub mod device;
 pub mod export;
@@ -25,6 +26,7 @@ pub mod sidecar;
 pub mod stages;
 pub mod taps;
 pub mod text;
+pub mod tour;
 
 /// The engine version this build links (the pinned commit's `rr_dr60::VERSION`).
 pub fn engine_version() -> &'static str {

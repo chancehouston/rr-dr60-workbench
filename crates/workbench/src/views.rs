@@ -36,6 +36,8 @@ pub enum Tab {
     Device,
     /// A against B (spec 005b).
     Compare,
+    /// The guided tour of the stages (spec 006 D4).
+    Tour,
 }
 
 struct Running<T> {

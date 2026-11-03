@@ -103,7 +103,7 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 52] = [
+const LISTED: [&str; 73] = [
     "start_recording",
     "record_with_changes",
     "stop_recording_with_changes",
@@ -158,6 +158,29 @@ const LISTED: [&str; 52] = [
     "set_component_parameter",
     // Spec 005b FR-008 (restated): the coder's delay in the gate reports.
     "speech_codec_info",
+    // Reached by 001 and 004, listed by 006's completeness check.
+    "playback_latency_samples",
+    "stop_recording",
+    // Spec 006 FR-005: the last nineteen.
+    "process_with_events",
+    "process_in_place",
+    "process_in_place_with_events",
+    "process_in_place_with_events_and_changes",
+    "reset",
+    "play",
+    "route",
+    "set_route",
+    "volume",
+    "set_volume",
+    "battery_volts",
+    "set_battery_volts",
+    "playback_speed",
+    "set_playback_speed",
+    "playback_speed_mode",
+    "set_playback_speed_mode",
+    "component",
+    "component_parameter_value",
+    "record_latency_pre_encoder_samples",
 ];
 
 /// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).
@@ -204,6 +227,17 @@ fn reach() {
         70,
         "the public, reachable Pipeline methods at engine 0.92.0 (81 less the 11 `__` test hooks)"
     );
+    // Spec 006 D5: every method reached (constitution II), and the list complete.
+    assert_eq!(
+        called.len(),
+        methods.len(),
+        "every public Pipeline method is called"
+    );
+    let mut listed: Vec<&str> = LISTED.to_vec();
+    listed.sort_unstable();
+    listed.dedup();
+    let all: Vec<&str> = methods.iter().map(String::as_str).collect();
+    assert_eq!(listed, all, "the list by feature names every method once");
     for m in LISTED {
         assert!(
             methods.iter().any(|x| x == m),

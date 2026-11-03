@@ -131,6 +131,9 @@ struct Workbench {
     capture: Option<CaptureRun>,
     capture_channel: Channel,
     capture_monitor: bool,
+    tour_page: usize,
+    forms_job: Option<Receiver<Vec<String>>>,
+    forms_result: Vec<String>,
 }
 
 impl Workbench {
@@ -164,6 +167,9 @@ impl Workbench {
             capture: None,
             capture_channel: Channel::Index(0),
             capture_monitor: false,
+            tour_page: 0,
+            forms_job: None,
+            forms_result: Vec::new(),
         }
     }
 
@@ -514,6 +520,159 @@ impl Workbench {
             Err(e) => m.push(e.to_string()),
         }
         self.messages = m;
+    }
+
+    /// The one-pass call-form check (spec 006 D1), on its own thread.
+    fn start_forms_check(&mut self, ctx: &egui::Context) {
+        let Some(req) = self.session.request() else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let c = workbench_core::checks::one_pass_check(&req, &AtomicBool::new(false));
+            let mut m: Vec<String> = c
+                .forms
+                .iter()
+                .map(|f| match &f.run {
+                    Ok(_) if f.agrees => format!("{}: agrees with the render", f.form.name()),
+                    Ok(_) => format!(
+                        "{}: DISAGREES with the render (an engine finding)",
+                        f.form.name()
+                    ),
+                    Err(e) => format!("{}: {e}", f.form.name()),
+                })
+                .collect();
+            m.push(match &c.reset {
+                Ok(r) if r.agrees => "reset, then render again: agrees with a fresh engine built from the state after the first render".into(),
+                Ok(_) => "reset, then render again: DISAGREES with a fresh engine built from the state (an engine finding)".into(),
+                Err(e) => format!("reset: {e}"),
+            });
+            let _ = tx.send(m);
+            ctx2.request_repaint();
+        });
+        self.forms_job = Some(rx);
+        self.forms_result = vec!["Checking the call forms…".into()];
+    }
+
+    /// The guided tour (spec 006 D4): the stage manifest stage by stage.
+    fn tour_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let pages = workbench_core::tour::pages();
+        self.tour_page = self.tour_page.min(pages.len() - 1);
+        ui.horizontal(|ui| {
+            if ui.button("Previous").clicked() && self.tour_page > 0 {
+                self.tour_page -= 1;
+            }
+            egui::ComboBox::from_id_salt("tour_page")
+                .selected_text(format!("{}", pages[self.tour_page]))
+                .show_ui(ui, |ui| {
+                    for (k, n) in pages.iter().enumerate() {
+                        let name = workbench_core::stages::stages()
+                            .iter()
+                            .find(|e| e.number == *n)
+                            .map_or("", |e| e.name);
+                        ui.selectable_value(&mut self.tour_page, k, format!("{n} {name}"));
+                    }
+                });
+            if ui.button("Next").clicked() && self.tour_page + 1 < pages.len() {
+                self.tour_page += 1;
+            }
+        });
+        let n = pages[self.tour_page];
+        if let Some(e) = workbench_core::stages::stages()
+            .iter()
+            .find(|e| e.number == n)
+        {
+            egui::Grid::new("tour_fields").striped(true).show(ui, |ui| {
+                for (k, v) in workbench_core::stages::stage_fields(e) {
+                    ui.label(k);
+                    ui.label(v);
+                    ui.end_row();
+                }
+            });
+        }
+        ui.separator();
+        let panel_values: Vec<(u32, ControlReading)> = self
+            .session
+            .panel()
+            .map(|p| p.rows().iter().map(|r| (r.index, r.value)).collect())
+            .unwrap_or_default();
+        egui::Grid::new("tour_controls")
+            .striped(true)
+            .show(ui, |ui| {
+                for e in workbench_core::tour::controls(n) {
+                    ui.label(e.identifier);
+                    let i = rr_dr60::controls::controls()
+                        .iter()
+                        .position(|x| x.identifier == e.identifier)
+                        .unwrap_or(0) as u32;
+                    ui.monospace(
+                        panel_values
+                            .iter()
+                            .find(|(j, _)| *j == i)
+                            .map_or_else(String::new, |(_, r)| {
+                                workbench_core::sidecar::fmt_reading(*r)
+                            }),
+                    );
+                    ui.label(e.description);
+                    ui.end_row();
+                }
+            });
+        if workbench_core::tour::switches(n).is_empty() {
+            return;
+        }
+        ui.separator();
+        if ui
+            .add_enabled(
+                self.job.is_none(),
+                egui::Button::new("Compare without this stage"),
+            )
+            .clicked()
+        {
+            let (Some(r), Some(cur)) = (self.session.render(), self.session.request()) else {
+                self.messages = vec!["Render first".into()];
+                return;
+            };
+            match workbench_core::tour::without_stage(r, &cur, n) {
+                Err(e) => self.messages = vec![e.to_string()],
+                Ok(w) => {
+                    let mut m = Vec::new();
+                    if self.session.b().is_some() {
+                        m.push("B is replaced by the current render (with the stage)".to_owned());
+                    }
+                    self.stop_ab();
+                    self.session.keep_as_b();
+                    if let Some(p) = self.session.panel_mut() {
+                        p.set_many(
+                            &w.turned_off
+                                .iter()
+                                .map(|(i, _)| (*i, ControlReading::Switch(false)))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    m.push(format!(
+                        "The panel's {} switched off; rendering A without the stage",
+                        w.turned_off
+                            .iter()
+                            .map(|(_, id)| *id)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    if !w.removed.is_empty() {
+                        m.push(format!(
+                            "{} scheduled change(s) of these switches are left out of A",
+                            w.removed.len()
+                        ));
+                    }
+                    if n == 5 {
+                        m.push("With the gate off in drop mode, A and B do not line up sample for sample".into());
+                    }
+                    self.messages = m;
+                    self.start_render(ctx);
+                    self.views.tab = views::Tab::Compare;
+                }
+            }
+        }
     }
 
     /// The capture's section of the Session tab (spec 007).
@@ -953,6 +1112,7 @@ impl eframe::App for Workbench {
                     (views::Tab::Stages, "Stages"),
                     (views::Tab::Device, "Device"),
                     (views::Tab::Compare, "Compare"),
+                    (views::Tab::Tour, "Tour"),
                 ] {
                     ui.selectable_value(&mut self.views.tab, t, name);
                 }
@@ -982,6 +1142,7 @@ impl eframe::App for Workbench {
                 views::Tab::Taps => self.views.taps(ui, &self.session),
                 views::Tab::Stages => self.views.stages(ui),
                 views::Tab::Compare => self.views.compare(ui, &self.session),
+                views::Tab::Tour => self.tour_view(ui, &ctx),
                 views::Tab::Device => {
                     self.device_view(ui);
                     ui.separator();
@@ -1455,6 +1616,28 @@ impl Workbench {
         ui.separator();
         self.live_section(ui);
         self.capture_section(ui);
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.forms_job.is_none() && self.session.request().is_some(),
+                    egui::Button::new("Check the call forms"),
+                )
+                .on_hover_text("Renders the session through each of the engine's six one-pass calls and after a reset, against the render (spec 006)")
+                .clicked()
+            {
+                self.start_forms_check(ui.ctx());
+            }
+        });
+        if let Some(rx) = &self.forms_job
+            && let Ok(m) = rx.try_recv()
+        {
+            self.forms_result = m;
+            self.forms_job = None;
+        }
+        for l in &self.forms_result {
+            ui.label(l);
+        }
         if ui.button("Export render…").clicked() {
             export = true;
         }
@@ -1817,6 +2000,7 @@ impl Workbench {
         let mut play = None;
         let mut play_live = None;
         let mut save_record = None;
+        let mut check_forms = None;
         egui::Grid::new("items").striped(true).show(ui, |ui| {
             for h in ["item", "length", "counter", "digest", ""] {
                 ui.strong(h);
@@ -1858,6 +2042,9 @@ impl Workbench {
                     }
                     if ui.small_button("save record…").clicked() {
                         save_record = Some(it.number);
+                    }
+                    if ui.small_button("check forms").clicked() {
+                        check_forms = Some(it.number);
                     }
                     if ui.small_button("erase").clicked() {
                         erase = Some(it.number);
@@ -1910,6 +2097,29 @@ impl Workbench {
             {
                 Ok(()) => format!("Exported item {n} to {}", path.display()),
                 Err(e) => e,
+            }];
+        }
+        if let Some(n) = check_forms {
+            let (values, changes) = match self.session.panel() {
+                Some(p) => device::play_request(p, &self.schedule, dev.settings().host_rate_hz),
+                None => (Vec::new(), Vec::new()),
+            };
+            self.messages = vec![match dev.playback_check(n, &values, &changes) {
+                Ok(c) => format!(
+                    "Item {n}: play and play_with_changes, values by index and by the plain setters: the four takes {} and {} 004's play to take; getters {:?}",
+                    if c.identical {
+                        "agree"
+                    } else {
+                        "DISAGREE (an engine finding)"
+                    },
+                    if c.equals_take {
+                        "equal"
+                    } else {
+                        "DIFFER from"
+                    },
+                    c.getters.first()
+                ),
+                Err(e) => e.to_string(),
             }];
         }
         if let Some(n) = save_record

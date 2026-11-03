@@ -548,7 +548,102 @@ impl Device {
             format!("{} host samples", self.p.playback_latency_samples()),
         ));
         v.push(("state".into(), format!("{:?}", Pipeline::state(&self.p))));
+        // Spec 006 D3: the readings by their own calls.
+        let c = self.call_readings();
+        v.push((
+            "record latency to the encoder".into(),
+            format!("{} host samples", c.pre_encoder_latency),
+        ));
+        v.push((
+            "live values (plain getters)".into(),
+            format!(
+                "route {:?}, volume {}, battery {} V, speed level {}, mode {:?}",
+                c.getters.route,
+                c.getters.volume,
+                c.getters.battery_volts,
+                c.getters.playback_speed,
+                c.getters.playback_speed_mode
+            ),
+        ));
+        v.push((
+            "slot (component, parameters)".into(),
+            format!("{:?}, {:?}", c.component, c.parameters),
+        ));
         v
+    }
+
+    /// The playback check (spec 006 D2): item `n` played on clones of one device snapshot,
+    /// through `play_with_changes` and through `play`, with the values set by index and by the
+    /// plain setters; the getters read before each start. The device is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of a value, the start or a change.
+    pub fn playback_check(
+        &self,
+        n: u32,
+        values: &[(u32, ControlReading)],
+        changes: &[Scheduled],
+    ) -> Result<PlaybackCheck, Error> {
+        check_clocks(changes, Clock::Output)?;
+        let mut takes = Vec::new();
+        let mut getters = Vec::new();
+        for plain in [false, true] {
+            for with_changes in [true, false] {
+                let mut c = self.p.clone();
+                for &(i, v) in values {
+                    if plain {
+                        set_plain(&mut c, i, v)?;
+                    } else {
+                        c.set_control_value(i, v)?;
+                    }
+                }
+                getters.push(Getters::of(&c));
+                c.start_playback(n)?;
+                takes.push(play_form(&mut c, changes, with_changes)?);
+            }
+        }
+        let first = &takes[0];
+        let identical = takes.iter().all(|t| {
+            t.len() == first.len() && t.iter().zip(first).all(|(a, b)| a.to_bits() == b.to_bits())
+        });
+        let mut d = Self {
+            p: self.p.clone(),
+            runs: BTreeMap::new(),
+        };
+        let reference = d.play_to_take(n, values, changes)?;
+        let equals_take = reference.samples.len() == first.len()
+            && reference
+                .samples
+                .iter()
+                .zip(first)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        Ok(PlaybackCheck {
+            identical,
+            equals_take,
+            getters,
+            lengths: takes.iter().map(Vec::len).collect(),
+        })
+    }
+
+    /// The readings by their own calls (spec 006 D3): the record path's latency to the
+    /// encoder, the live values by the plain getters, and the slot by `component` and
+    /// `component_parameter_value` (every index the engine accepts).
+    pub fn call_readings(&self) -> CallReadings {
+        use rr_dr60::components::InsertionPointId::BeforeLimiter;
+        let mut parameters = Vec::new();
+        let mut i = 0u32;
+        while let Ok(v) = Pipeline::component_parameter_value(&self.p, BeforeLimiter, i) {
+            parameters.push(v);
+            i += 1;
+        }
+        CallReadings {
+            pre_encoder_latency: Pipeline::record_latency_pre_encoder_samples(&self.p),
+            record_latency: self.p.record_latency_samples(),
+            getters: Getters::of(&self.p),
+            component: Pipeline::component(&self.p, BeforeLimiter),
+            parameters,
+        }
     }
 
     /// Plays item `n` to a take (D4): the values set first by index (spec 025's plain setters;
@@ -1047,4 +1142,138 @@ pub fn replay(s: &PlaybackSidecar, stored: &[u8]) -> Result<ReplayReport, String
         produced_matches,
         output_matches,
     })
+}
+
+/// The live values by the plain getters (spec 006 D2, D3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Getters {
+    /// `route()`.
+    pub route: rr_dr60::Route,
+    /// `volume()`.
+    pub volume: f32,
+    /// `battery_volts()`.
+    pub battery_volts: f32,
+    /// `playback_speed()`.
+    pub playback_speed: u8,
+    /// `playback_speed_mode()`.
+    pub playback_speed_mode: rr_dr60::speed::SpeedMode,
+}
+
+impl Getters {
+    /// The getters of `p`.
+    pub fn of(p: &Pipeline) -> Self {
+        Self {
+            route: Pipeline::route(p),
+            volume: Pipeline::volume(p),
+            battery_volts: Pipeline::battery_volts(p),
+            playback_speed: Pipeline::playback_speed(p),
+            playback_speed_mode: Pipeline::playback_speed_mode(p),
+        }
+    }
+}
+
+/// The playback check's result (spec 006 D2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaybackCheck {
+    /// The four takes (index × plain setters, `play_with_changes` × `play`) are bit-identical.
+    pub identical: bool,
+    /// They equal 004's play to take.
+    pub equals_take: bool,
+    /// The getters before each start, in the takes' order.
+    pub getters: Vec<Getters>,
+    /// The takes' lengths.
+    pub lengths: Vec<usize>,
+}
+
+/// The readings by their own calls (spec 006 D3).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallReadings {
+    /// `record_latency_pre_encoder_samples()`.
+    pub pre_encoder_latency: u32,
+    /// `record_latency_samples()`.
+    pub record_latency: u32,
+    /// The plain getters.
+    pub getters: Getters,
+    /// `component(BeforeLimiter)`.
+    pub component: rr_dr60::components::ComponentId,
+    /// `component_parameter_value` at each index the engine accepts.
+    pub parameters: Vec<f32>,
+}
+
+/// Sets a playback value by its plain setter (spec 006 D2).
+fn set_plain(p: &mut Pipeline, i: u32, v: ControlReading) -> Result<(), Error> {
+    let id = rr_dr60::controls::controls()
+        .get(i as usize)
+        .map_or("", |e| e.identifier);
+    match (id, v) {
+        ("route", ControlReading::Choice(c)) => {
+            Pipeline::set_route(
+                p,
+                if c == 1 {
+                    rr_dr60::Route::Earphone
+                } else {
+                    rr_dr60::Route::Speaker
+                },
+            );
+            Ok(())
+        }
+        ("volume", ControlReading::Continuous(x)) => Pipeline::set_volume(p, x),
+        ("battery_volts", ControlReading::Continuous(x)) => Pipeline::set_battery_volts(p, x),
+        ("playback_speed", ControlReading::Integer(l)) => {
+            Pipeline::set_playback_speed(p, u8::try_from(l).unwrap_or(u8::MAX))
+        }
+        ("playback_speed_mode", ControlReading::Choice(c)) => {
+            Pipeline::set_playback_speed_mode(
+                p,
+                if c == 1 {
+                    rr_dr60::speed::SpeedMode::PitchKept
+                } else {
+                    rr_dr60::speed::SpeedMode::PitchWithSpeed
+                },
+            );
+            Ok(())
+        }
+        _ => p.set_control_value(i, v),
+    }
+}
+
+/// Plays a started item to its end in 10 ms calls, the changes fed just in time, through
+/// `play_with_changes` or `play` (spec 006 D2).
+fn play_form(
+    p: &mut Pipeline,
+    changes: &[Scheduled],
+    with_changes: bool,
+) -> Result<Vec<f32>, Error> {
+    let block = block_for(Pipeline::settings(p).host_rate_hz).max(1);
+    let mut obuf = vec![0.0f32; block];
+    let mut cbuf = vec![ChangeEntry::default(); MAX_CHANGES_PER_CALL];
+    let mut due = Due::new(changes);
+    let mut out = Vec::new();
+    loop {
+        let mut refusal = None;
+        due.feed_on(p, Stream::Playback, changes, block as u64, &mut |_, e| {
+            refusal.get_or_insert(e);
+        });
+        if let Some(e) = refusal {
+            let _ = Pipeline::stop_playback(p);
+            return Err(e);
+        }
+        let info = if with_changes {
+            p.play_with_changes(&mut obuf, &mut cbuf)
+        } else {
+            Pipeline::play(p, &mut obuf)
+        };
+        let info = match info {
+            Ok(i) => i,
+            Err(e) => {
+                let _ = Pipeline::stop_playback(p);
+                return Err(e);
+            }
+        };
+        out.extend_from_slice(&obuf[..info.produced]);
+        if info.finished {
+            let _ = Pipeline::stop_playback(p);
+            return Ok(out);
+        }
+    }
 }
