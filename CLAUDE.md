@@ -27,6 +27,7 @@ Guidance for Claude Code working in this repository. Keep it current.
   spec, the plan and the merge, and runs each feature's desk checklist on the Mac. Reviews:
   `speckit-coach` always, and `hw-emulation-reviewer` when a feature shows readings
   (`.claude/agents/`).
+- **Autopilot (owner, 2026-11-02):** the owner approves the agent's decisions for this workbench and lets the agent merge its own workbench PRs once CI is green and the post-implementation reviews are applied, so work keeps moving. Desk checklists are run by the owner afterwards; findings become follow-up fixes. Engine-repo changes still go through the engine's own sign-offs.
 - **Moving the engine pin:** only to a merged engine commit or tag, in its own commit, with a
   CHANGELOG line.
 - Conventional Commits. Never commit audio.
