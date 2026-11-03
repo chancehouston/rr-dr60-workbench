@@ -60,6 +60,22 @@ Guidance for Claude Code working in this repository. Keep it current.
     - A helper named like an engine method (`input_position`) hides the engine's call from the reach scan.
     - A tolerance claimed over a 120 dB window must survive the f32 floor: reproduce it per rate before stating it.
   - Figures in `specs/005b-comparisons-presets/records.md`. Next: 006 (the coverage close-out) or 007 (microphone), per the plan of record.
+- 2026-11-03: **Feature 007 (the Mac's microphone as the input) is merged** (PR #14, merge commit bc178c6, CI green; under the autopilot rule). 185 tests, reach 51/70. **The owner's device check passed**: MacBook Pro Microphone at 48 kHz, 48 000 fed in 1 s, no gaps, reproduces offline.
+  - **What it does**:
+    - The engine runs in the input callback, as an input-driven mode of `LiveCore` (`new_capture`, `push`, `feed_chunk`), in whole 10 ms chunks.
+    - The take is 003's live take over the captured input, written as a float WAV in `~/Library/Application Support/rr-dr60-workbench/captures` and handed to the session by `Session::accept_capture`.
+    - The monitor is off by default, bounded, and never touches the take.
+  - **Lessons**:
+    - The session ties a render to its file by the file bytes' SHA, so a take made from samples must carry the WAV's byte digest.
+    - Any stop that changes the session (here the capture's swap) must run before the action that triggered it, never inside a shared `stop_playback`.
+    - Fixed monitor bounds fail at large device buffers: derive them from the pull size, and round drops down.
+    - A new core method named like an engine method (`process`) hides the engine's call from the reach scan (again).
+    - `Iterator::sum` keeps −0.0, so a hand-written mix loop differs from `mix_floats`.
+  - **Follow-ups**:
+    - live commands from the window during a capture;
+    - a raw input callback (coreaudio-rs resizes its buffer on the audio thread when the callback size changes);
+    - other input devices.
+  - Figures in `specs/007-microphone-input/records.md`. Next: 006 (the coverage close-out).
 
 ## Lessons (004b)
 
