@@ -100,6 +100,12 @@ pub struct PlayTake {
     pub place: u64,
     /// The meter rows (one per 10 ms call; output spans only).
     pub meters: Vec<MeterRow>,
+    /// A live take stopped before the playback finished (spec 004b D5): the samples are a
+    /// prefix of the full playback.
+    pub stopped_early: bool,
+    /// A live take whose capture overflowed: it does not reproduce and is not exported
+    /// (spec 004b review B1).
+    pub incomplete: bool,
 }
 
 /// The persistent device engine (D1).
@@ -323,6 +329,12 @@ impl Device {
     ///
     /// The engine's refusal, or `NoSuchRecording` when the digest moved.
     pub fn export_take(&self, take: &PlayTake) -> Result<Vec<u8>, Error> {
+        if take.incomplete {
+            // An incomplete live take does not reproduce (spec 004b review B1).
+            return Err(Error::NoSuchRecording {
+                number: take.number,
+            });
+        }
         if self.p.recording_digest(take.number)? != take.digest {
             return Err(Error::NoSuchRecording {
                 number: take.number,
@@ -390,7 +402,34 @@ impl Device {
         values: &[(u32, ControlReading)],
         changes: &[Scheduled],
     ) -> Result<PlayTake, Error> {
+        // On a clone, as the live playback (spec 004b review B5): a landed stage switch does
+        // not carry into the device's settings, so both modes leave the device the same.
+        self.play_limited(n, values, changes, None)
+    }
+
+    /// As [`Device::play_to_take`], stopping once `limit` samples are produced (a prefix
+    /// replay, spec 004b review B7).
+    fn play_limited(
+        &mut self,
+        n: u32,
+        values: &[(u32, ControlReading)],
+        changes: &[Scheduled],
+        limit: Option<u64>,
+    ) -> Result<PlayTake, Error> {
         check_clocks(changes, Clock::Output)?;
+        let start = self.prepare_play(n, values)?;
+        let mut c = self.p.clone();
+        c.start_playback(n)?;
+        Self::play_on(&mut c, start, changes, limit)
+    }
+
+    /// Sets the five values (all restored if one is refused) and reads the start state: the
+    /// settings, the values and the item's digest (D4, D5).
+    fn prepare_play(
+        &mut self,
+        n: u32,
+        values: &[(u32, ControlReading)],
+    ) -> Result<crate::live_play::Start, Error> {
         let before: Vec<(u32, ControlReading)> = values
             .iter()
             .filter_map(|&(i, _)| self.p.control_value(i).ok().map(|r| (i, r)))
@@ -412,7 +451,27 @@ impl Device {
             })
             .collect();
         let digest = self.p.recording_digest(n)?;
-        self.p.start_playback(n)?;
+        Ok(crate::live_play::Start {
+            number: n,
+            digest,
+            settings,
+            values: start_values,
+        })
+    }
+
+    /// Plays a started playback on `p` to its end (D4).
+    fn play_on(
+        p: &mut Pipeline,
+        start: crate::live_play::Start,
+        changes: &[Scheduled],
+        limit: Option<u64>,
+    ) -> Result<PlayTake, Error> {
+        let crate::live_play::Start {
+            number: n,
+            digest,
+            settings,
+            values: start_values,
+        } = start;
         let block = block_for(settings.host_rate_hz).max(1);
         let mut obuf = vec![0.0f32; block];
         let mut cbuf = vec![ChangeEntry::default(); MAX_CHANGES_PER_CALL];
@@ -420,7 +479,7 @@ impl Device {
         let mut samples = Vec::new();
         let mut log = Vec::new();
         let mut meters = vec![MeterRow {
-            meters: self.p.rest_meters(),
+            meters: p.rest_meters(),
             in_span: (0, 0),
             out_span: (0, 0),
             tail: false,
@@ -429,23 +488,17 @@ impl Device {
         let mut place;
         loop {
             let mut refusal = None;
-            due.feed_on(
-                &mut self.p,
-                Stream::Playback,
-                changes,
-                block as u64,
-                &mut |_, e| {
-                    refusal.get_or_insert(e);
-                },
-            );
+            due.feed_on(p, Stream::Playback, changes, block as u64, &mut |_, e| {
+                refusal.get_or_insert(e);
+            });
             if let Some(e) = refusal {
-                let _ = Pipeline::stop_playback(&mut self.p);
+                let _ = Pipeline::stop_playback(p);
                 return Err(e);
             }
-            let info = match self.p.play_with_changes(&mut obuf, &mut cbuf) {
+            let info = match p.play_with_changes(&mut obuf, &mut cbuf) {
                 Ok(i) => i,
                 Err(e) => {
-                    let _ = Pipeline::stop_playback(&mut self.p);
+                    let _ = Pipeline::stop_playback(p);
                     return Err(e);
                 }
             };
@@ -455,12 +508,14 @@ impl Device {
             frames += info.frames as u64;
             place = info.place;
             meters.push(MeterRow {
-                meters: Pipeline::meters(&self.p),
+                meters: Pipeline::meters(p),
                 in_span: (0, 0),
                 out_span: (o0, samples.len() as u64),
                 tail: false,
             });
-            if info.finished {
+            if info.finished || limit.is_some_and(|k| samples.len() as u64 >= k) {
+                // A prefix replay stops once it has the prefix (spec 004b review B7).
+                let _ = Pipeline::stop_playback(p);
                 break;
             }
         }
@@ -475,7 +530,31 @@ impl Device {
             frames,
             place,
             meters,
+            stopped_early: false,
+            incomplete: false,
         })
+    }
+}
+
+impl Device {
+    /// A live player for item `n` (spec 004b D1): the values set on the device, the start
+    /// state read, and the playback started on a clone of the engine, which the output
+    /// callback then owns. The device itself does not play.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of a value, of the start, or a change in the input clock.
+    pub fn live_player(
+        &mut self,
+        n: u32,
+        values: &[(u32, ControlReading)],
+        changes: &[Scheduled],
+    ) -> Result<(crate::live_play::LivePlayer, crate::live_play::PlayQueues), Error> {
+        check_clocks(changes, Clock::Output)?;
+        let start = self.prepare_play(n, values)?;
+        let mut clone = self.p.clone();
+        clone.start_playback(n)?;
+        Ok(crate::live_play::LivePlayer::new(clone, start, changes))
     }
 }
 
@@ -569,6 +648,10 @@ pub fn playback_sidecar(take: &PlayTake, stored_file: &str, stored_sha256: &[u8;
         "output.sha256 {}",
         crate::input::hex(&crate::input::samples_sha256(&take.samples))
     );
+    if take.stopped_early {
+        // A live take stopped before the end (spec 004b D5): a replay compares the prefix.
+        let _ = writeln!(s, "stopped early");
+    }
     for (i, e) in rr_dr60::controls::controls().iter().enumerate() {
         if let Ok(r) = control_map::settings_value(&take.settings, i as u32) {
             let _ = writeln!(s, "setting {} {}", e.identifier, fmt_reading(r));
@@ -613,6 +696,8 @@ pub struct PlaybackSidecar {
     pub produced: u64,
     /// The output's SHA-256 (hex).
     pub output_sha256: String,
+    /// A live take stopped before the end: the produced samples are a prefix (spec 004b D5).
+    pub stopped_early: bool,
 }
 
 /// Reads a playback sidecar strictly (B5): blank and `#` lines aside, every line is known, no
@@ -629,6 +714,7 @@ pub fn read_playback(text: &str) -> Result<PlaybackSidecar, String> {
     let mut setting_lines: Vec<(u32, String, String)> = Vec::new();
     let mut values: Vec<(u32, ControlReading)> = Vec::new();
     let mut changes = Vec::new();
+    let mut stopped_early = false;
     let mut fields: std::collections::BTreeMap<&'static str, String> =
         std::collections::BTreeMap::new();
     for (n, line) in lines {
@@ -673,6 +759,14 @@ pub fn read_playback(text: &str) -> Result<PlaybackSidecar, String> {
                     value,
                     tag,
                 });
+            }
+            "stopped" => {
+                if rest != "early" || stopped_early {
+                    return Err(format!(
+                        "line {n}: only one \"stopped early\" line is allowed"
+                    ));
+                }
+                stopped_early = true;
             }
             k => {
                 let Some(known) = KEYS.iter().find(|x| **x == k) else {
@@ -726,6 +820,7 @@ pub fn read_playback(text: &str) -> Result<PlaybackSidecar, String> {
             .parse()
             .map_err(|_| "a bad produced count")?,
         output_sha256: fields["output.sha256"].clone(),
+        stopped_early,
     })
 }
 
@@ -768,9 +863,18 @@ pub fn replay(s: &PlaybackSidecar, stored: &[u8]) -> Result<ReplayReport, String
             s.digest
         ));
     }
-    let take = d
-        .play_to_take(n, &s.values, &s.changes)
+    let limit = s.stopped_early.then_some(s.produced);
+    let mut take = d
+        .play_limited(n, &s.values, &s.changes, limit)
         .map_err(|e| e.to_string())?;
+    if s.stopped_early && take.samples.len() as u64 > s.produced {
+        // The prefix the live take produced (spec 004b D5).
+        let k = s.produced;
+        take.samples.truncate(k as usize);
+        take.log.retain(|e| e.position < k);
+        take.meters.retain(|r| r.out_span.1 <= k);
+        take.stopped_early = true;
+    }
     let produced_matches = take.samples.len() as u64 == s.produced;
     let output_matches =
         crate::input::hex(&crate::input::samples_sha256(&take.samples)) == s.output_sha256;

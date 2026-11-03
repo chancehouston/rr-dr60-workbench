@@ -222,8 +222,8 @@ impl Playback {
         }
     }
 
-    /// Starts the live core in the output callback (spec 003 D1): its mono output to both
-    /// channels.
+    /// Starts a live fill in the output callback (spec 003 D1, spec 004b D1): its mono output
+    /// to both channels. `fill` runs on the audio thread and must be real-time safe.
     ///
     /// # Errors
     ///
@@ -231,13 +231,13 @@ impl Playback {
     pub fn start_live(
         rate: u32,
         shared: Arc<Shared>,
-        mut core: workbench_core::live::LiveCore,
+        mut fill: impl FnMut(&mut [f32]) + Send + 'static,
     ) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         {
             Ok(Self {
                 player: mac::Player::start_with(rate, shared.clone(), move |l, r| {
-                    core.fill(l);
+                    fill(l);
                     // The monitor volume, on playback only: the take keeps the engine's samples
                     // (post-implementation review B12).
                     let vol = f32::from_bits(
@@ -254,7 +254,7 @@ impl Playback {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (rate, shared, &mut core);
+            let _ = (rate, shared, &mut fill);
             Err(workbench_core::text::PLAYBACK_UNAVAILABLE.to_owned())
         }
     }

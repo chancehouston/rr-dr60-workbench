@@ -176,6 +176,23 @@ impl Due {
         n: u64,
         refused: &mut dyn FnMut(u64, Error),
     ) {
+        self.feed_on_with(p, stream, list, n, &mut |c, r| {
+            if let Err(e) = r {
+                refused(c.tag, e);
+            }
+        });
+    }
+
+    /// As [`Due::feed_on`], reporting every change's outcome to `done` in the order the engine
+    /// received it (spec 004b D4: a live take keeps its changes in scheduling order).
+    pub fn feed_on_with(
+        &mut self,
+        p: &mut Pipeline,
+        stream: Stream,
+        list: &[Scheduled],
+        n: u64,
+        done: &mut dyn FnMut(&Scheduled, Result<(), Error>),
+    ) {
         let in_end = p.input_position(stream).unwrap_or(0) + n;
         let out_end = p.stream_position(stream).unwrap_or(0) + n;
         while let Some(&i) = self.input.get(self.next_in) {
@@ -183,9 +200,10 @@ impl Due {
             if c.position >= in_end {
                 break;
             }
-            if let Err(e) = p.schedule_change(stream, c.position, c.control, c.value, c.tag) {
-                refused(c.tag, e);
-            }
+            done(
+                &c,
+                p.schedule_change(stream, c.position, c.control, c.value, c.tag),
+            );
             self.next_in += 1;
         }
         while let Some(&i) = self.output.get(self.next_out) {
@@ -193,9 +211,10 @@ impl Due {
             if c.position >= out_end {
                 break;
             }
-            if let Err(e) = p.schedule_change(stream, c.position, c.control, c.value, c.tag) {
-                refused(c.tag, e);
-            }
+            done(
+                &c,
+                p.schedule_change(stream, c.position, c.control, c.value, c.tag),
+            );
             self.next_out += 1;
         }
     }
