@@ -76,6 +76,18 @@ Guidance for Claude Code working in this repository. Keep it current.
     - a raw input callback (coreaudio-rs resizes its buffer on the audio thread when the callback size changes);
     - other input devices.
   - Figures in `specs/007-microphone-input/records.md`. Next: 006 (the coverage close-out).
+- 2026-11-03: **Feature 006 (the coverage close-out) is merged** (PR #16, merge commit b481c97, CI green; under the autopilot rule). **Reach 70/70**, asserted with a complete list; 195 tests. **The plan of record (001 – 007) is complete.**
+  - **What it adds**:
+    - a one-pass call-form check: six forms, and a reset render against a fresh engine from the state;
+    - a playback check: `play` × `play_with_changes`, by index × by the plain setters, on copies;
+    - the readings by their own calls;
+    - a Tour tab, from the manifests, with "compare without this stage".
+  - **Engine issue #79**: the manifest's words.
+  - **Lessons**:
+    - The engine's `reset` keeps every landed value. So a reset render's oracle is a fresh engine from `settings()` and the non-setting controls, and a landed stage 11 – 13 switch must be rebuilt as a position-0 landing, since "configured off" is not "landed off".
+    - A window flow must render the request the core built, not rebuild one from the panel.
+    - Report a check's verdicts, not only its data.
+  - Figures in `specs/006-coverage-close-out/records.md`. Next: the owner's desk checklists; the follow-ups in the records of 005 – 007; engine issues #72 – #79.
 
 ## Lessons (004b)
 
