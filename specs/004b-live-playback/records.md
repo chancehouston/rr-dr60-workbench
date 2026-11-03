@@ -40,3 +40,7 @@ The verdict was "sound with fixes". The reviewer's stress probe found no break i
 - **B8**: every refused list entry gets a reply. The twin of a live take is `play_to_take` with the take's own changes.
 - **B9**: the live widgets follow every landed change, from the list or a command.
 - **B10**: Play to take is disabled during a live playback. Record stays enabled, now covered by the 10 s queues.
+
+## Convergence (T009 – T010)
+
+`/speckit-converge` found the spec behind the review on D5 and D7; both restatements are now in its clarifications. As with 004, there is no `plan.md`; the design is D1 – D7 and these records. Every acceptance scenario and edge case has a test.

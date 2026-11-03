@@ -8,3 +8,8 @@
 - [X] T006 `wording` and `reach` updated. Records.
 - [X] T007 The gate.
 - [X] T008 Post-implementation review (B1 – B10), applied before the PR (records.md).
+
+## Phase 2: Convergence
+
+- [X] T009 Record the review's restatements of D5 and D7 (and 004 D4) in the spec's clarifications, per D5 / D7 (partial)
+- [X] T010 Record that 004b has no `plan.md`: its design is D1 – D7 and the records, per plan: artifacts (partial)

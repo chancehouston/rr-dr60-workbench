@@ -19,6 +19,12 @@
 
   This restates the plan row's "memory calls disabled". The clone copies the store reserved at construction (1.8 MB with the speech coder on, 86 MB with it bypassed).
 
+### Session 2026-11-02 (post-implementation review: dated restatements)
+
+- **D5**: a refused list entry or command is not kept, so the twin of a live take is `play_to_take` with **the take's own changes** (B8). A command after the playback finished is refused (`NotPlaying`, B3).
+- **D7**: **Play to take** is disabled during a live playback (B10). Record and the memory calls stay enabled, and the capture queues hold about 10 s of UI stall (B1). An overflowed take is marked incomplete and is not exported.
+- **004 D4**: Play to take also runs on a clone (B5), so a change landed inside a take does not carry into the device.
+
 ## Decisions (in force under autopilot)
 
 | # | Decision | In force |
