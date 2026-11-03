@@ -12,17 +12,17 @@ methods and 15 stages. The shell lists the control manifest read-only.
 
 | # | Feature | What it brings into reach | Depends on |
 |---|---|---|---|
-| 001 | **Offline render session** | Open an audio file at any supported host rate. Edit every setting through a panel generated from the control manifest, render through the default one-pass engine, play the original and the render A/B, export the render with its settings sidecar. | — |
-| 002 | **Taps, scopes and meters** | Pick any `Tap`. Waveform and spectrum views of the input, the tap and the difference. The per-call meters plotted over time. The stage manifest as a panel per stage, with its sources and assumptions. | 001 |
+| 001 | **Offline render session** | Open an audio file at any supported host rate. Edit every control, including the tap and the component slot, through a panel generated from the control manifest. Render through the default one-pass engine, with a tail so that the whole input comes out. play the original and the render A/B, export the render with its settings sidecar. | — |
+| 002 | **Taps, scopes and meters** | Waveform and spectrum views of the input, the tap and the difference. The per-call meters plotted over time. The stage manifest as a panel per stage, with its sources and assumptions. | 001 |
 | 003 | **Live engine** | Real-time playback through the engine on the output device (cpal). Live controls and scheduled changes (`schedule_change`) from the panel. The change log and voice-activation events on a timeline. Optionally, the Mac's microphone as the input. | 001, 002 |
 | 004 | **Record and play paths** | The recorder, the memory (items, capacity, erase, export and import of the stored form), playback with the speed levels and modes, route, volume and battery, stage bypass during playback. | 003 |
 | 005 | **Processing records and comparisons** | Write, read and re-render processing records (spec 020). Two renders side by side with a null test, a spectral difference and a parameter diff. Settings presets saved as files. | 001, 002 |
-| 006 | **Coverage close-out** | The `Pipeline` coverage test at 100 % (constitution II). The component slot (spec 024) and every remaining method and tap. A guided tour of the stages. | 001–005 |
+| 006 | **Coverage close-out** | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005 |
 
 ## Standing rules
 
 - Engine gaps become engine issues or specs (constitution I). The workbench pin moves only to a
   merged engine commit or tag.
-- Each feature lists the `Pipeline` methods and taps it brings into use. The coverage test prints
-  the running ratio from feature 002 on.
+- Each feature lists the `Pipeline` methods and taps it brings into use. The reach test prints
+  the running ratio from feature 001 on.
 - The owner runs each feature's desk checklist on the Mac before merging.
