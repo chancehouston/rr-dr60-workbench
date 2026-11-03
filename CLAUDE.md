@@ -38,6 +38,14 @@ Guidance for Claude Code working in this repository. Keep it current.
 - 2026-11-02: **Feature 001 (the offline render session) is merged** (PR #2, merge commit 8afbced, CI green; merged by the agent under the autopilot rule, the owner's desk checklist pending): 54 tests after the post-implementation reviews and convergence (T038, streaming decode). Before that: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed. The core `Session` holds the rules of opening a file, attaching a render and restoring a sidecar. Next: feature 002 (taps, scopes and meters) on `002-taps-scopes-meters`.
 - 2026-11-02: **Feature 002 (taps, scopes and meters) is merged** (PR #3, merge commit aed08c2, CI green; under the autopilot rule, the owner's desk checklist pending): 81 tests, reach 15/70, figures in `specs/002-taps-scopes-meters/records.md`, engine issue #75 (the meter table). Next: feature 003 (the live engine) on `003-live-engine`.
 - 2026-11-02: **Feature 003 (the live engine) is merged** (PR #4, CI green; under the autopilot rule, the owner's desk checklist pending): 96 tests, reach 20/70, live takes reproduce bit for bit through their v2 sidecars; the microphone deferred to 007. Figures in `specs/003-live-engine/records.md`. Next: feature 004 (the record and play paths).
+- 2026-11-02: **Feature 004 (the record and play paths, offline) is merged** (PR #6, merge commit fa027a5, CI green; under the autopilot rule, the owner's desk checklist pending): 109 tests, reach 41/70. A persistent device engine records into the memory and plays items to takes. At seven rates the takes reproduce bit for bit through a playback sidecar (`rr-dr60-workbench playback 1`), against the exported stored form; a replay checks the stored form's, the count's and the output's digests. Live playback is split out as 004b. Figures in `specs/004-record-play-paths/records.md`. Next: 004b (live playback).
+
+## Lessons (004)
+
+- A change entry's `after` is the stored f32 widened to f64, so compare against `value as f32`, not the f64 requested.
+- `StopOutcome.input_samples_total` includes the stop's own silence. The input the caller fed is `stop_input_position`.
+- A method name the workbench also defines (`state`) counts toward reach only when called as `Pipeline::state(`.
+- An oracle for a `Device` wrapper must be a direct engine that shares no workbench code (schedule every change before the start, play in large calls).
 
 ## Lessons (003)
 

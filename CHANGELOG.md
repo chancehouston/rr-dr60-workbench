@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Feature 004, the record and play paths (offline):
+  - a persistent device engine, built from the panel, synced through `reconfigure` and emptied by Reset device;
+  - recording into the memory, with record-side changes in the input clock and the engine's refusals and self-stop;
+  - the memory view: items, status, erase, erase all, and export and import of the stored form;
+  - play to a take, with the five playback values and playback-clock changes, showing the change log and the place reached;
+  - the playback sidecar (`rr-dr60-workbench playback 1`), and a replay that checks the stored form's, the produced count's and the output's digests.
 - Feature 003, the live engine:
   - the live core in the output callback (10 ms chunks through a FIFO, a bounded skip in drop mode);
   - live controls with the engine's reasons for the disabled ones;
