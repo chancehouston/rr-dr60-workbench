@@ -35,7 +35,7 @@ Guidance for Claude Code working in this repository. Keep it current.
 ## Current status
 
 - 2026-11-02: Bootstrapped (the plan of record, CI on macOS). Engine pin `a06318c` (0.92.0).
-- 2026-11-02: **Feature 001 (the offline render session) is implemented** on `001-offline-render-session`: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed.
+- 2026-11-02: **Feature 001 (the offline render session) is merged** (PR #2, merge commit 8afbced, CI green; merged by the agent under the autopilot rule, the owner's desk checklist pending): 54 tests after the post-implementation reviews and convergence (T038, streaming decode). Before that: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed. The core `Session` holds the rules of opening a file, attaching a render and restoring a sidecar. Next: feature 002 (taps, scopes and meters) on `002-taps-scopes-meters`.
 
 ## Lessons (001)
 
