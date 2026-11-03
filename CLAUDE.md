@@ -39,6 +39,14 @@ Guidance for Claude Code working in this repository. Keep it current.
 - 2026-11-02: **Feature 002 (taps, scopes and meters) is merged** (PR #3, merge commit aed08c2, CI green; under the autopilot rule, the owner's desk checklist pending): 81 tests, reach 15/70, figures in `specs/002-taps-scopes-meters/records.md`, engine issue #75 (the meter table). Next: feature 003 (the live engine) on `003-live-engine`.
 - 2026-11-02: **Feature 003 (the live engine) is merged** (PR #4, CI green; under the autopilot rule, the owner's desk checklist pending): 96 tests, reach 20/70, live takes reproduce bit for bit through their v2 sidecars; the microphone deferred to 007. Figures in `specs/003-live-engine/records.md`. Next: feature 004 (the record and play paths).
 - 2026-11-02: **Feature 004 (the record and play paths, offline) is merged** (PR #6, merge commit fa027a5, CI green; under the autopilot rule, the owner's desk checklist pending): 109 tests, reach 41/70. A persistent device engine records into the memory and plays items to takes. At seven rates the takes reproduce bit for bit through a playback sidecar (`rr-dr60-workbench playback 1`), against the exported stored form; a replay checks the stored form's, the count's and the output's digests. Live playback is split out as 004b. Figures in `specs/004-record-play-paths/records.md`. Next: 004b (live playback).
+- 2026-11-02: **Feature 004b (live playback) is merged** (PR #8, merge commit 3f9c908, CI green; under the autopilot rule, the owner's desk checklist pending): 121 tests, reach 41/70. A clone of the device engine plays an item in the output callback, and the playback controls change at once. At seven rates the live takes reproduce bit for bit offline, ties included; a take stopped early replays as a prefix. Play to take now runs on a clone too (review B5). Figures in `specs/004b-live-playback/records.md`. Next: 005 (processing records and comparisons).
+
+## Lessons (004b)
+
+- Live commands scheduled at the top of a callback sit on a call boundary before that call's list entries, so the order the engine receives changes is already position order. A test that ties commands with list entries is what pins it.
+- `Pipeline` is `Clone`, and its memory keeps its reservation, so a clone is a cheap way to play without touching the device.
+- A queue drained on the UI thread must hold longer than the longest UI block (file dialogs, synchronous engine calls); about 10 s here.
+- Two consumers of one reply queue starve each other. Pop it in exactly one place.
 
 ## Lessons (004)
 

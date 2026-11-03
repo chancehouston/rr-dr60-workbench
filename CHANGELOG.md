@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Feature 004b, live playback: a clone of the device engine plays an item in the output callback; the route, volume, battery, speed level and mode and the stage switches 10 – 13 change at once; the take keeps every change in scheduling order, uses 004's playback sidecar, and replays as a prefix when stopped early.
+
+### Changed
+
+- Play to take runs on a clone of the device, so a change that lands inside a take no longer carries into the device (spec 004b review B5).
+
+### Added (004)
+
 - Feature 004, the record and play paths (offline):
   - a persistent device engine, built from the panel, synced through `reconfigure` and emptied by Reset device;
   - recording into the memory, with record-side changes in the input clock and the engine's refusals and self-stop;
