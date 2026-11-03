@@ -118,6 +118,28 @@ const LISTED: [&str; 12] = [
     "footprint_bytes",
 ];
 
+/// FR-017's items outside `Pipeline`, and the stage manifest (coach 10).
+const OUTSIDE: [&str; 7] = [
+    "controls::controls()",
+    "validate()",
+    "setting_control(",
+    "samples_from_i24(",
+    "onepass_output_to_input(",
+    "control_map::set_settings_value(",
+    "rr_dr60::manifest()",
+];
+
+#[test]
+fn outside_items_are_used() {
+    let src = workbench_source();
+    for item in OUTSIDE {
+        assert!(
+            src.contains(item),
+            "FR-017 lists {item}, but the workbench does not call it"
+        );
+    }
+}
+
 #[test]
 fn reach() {
     let methods = pipeline_methods();

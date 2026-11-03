@@ -76,6 +76,46 @@ fn round_trips_at_every_rate() {
 }
 
 #[test]
+fn the_map_is_exact() {
+    // SC-005 "exactly": every input outside a removed pause maps to the output the engine's map
+    // takes back to it; a removed input maps to its splice's output position.
+    for rate in [6000, 48000] {
+        let b = voiced(rate, 0.4, 0.5);
+        let gap = vec![0.0f32; 3 * rate as usize];
+        let x = [b.clone(), gap.clone(), b.clone(), gap, b].concat();
+        let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "drop")));
+        assert!(!r.events.is_empty());
+        let n_out = r.samples.len() as u64;
+        let l = u64::from(r.latency_samples);
+        // The removed input ranges, in input positions.
+        let mut removed = Vec::new();
+        let mut before = 0u64;
+        for e in &r.events {
+            let start = e.output_position + before - l;
+            removed.push((start, start + e.input_length, e.output_position));
+            before += e.input_length;
+        }
+        for i in (0..x.len() as u64).step_by(31) {
+            let o = ab::to_render(i, &r, AbMode::EngineMap);
+            if o >= n_out {
+                continue; // a final pause
+            }
+            if let Some(&(_, _, splice)) = removed.iter().find(|(s, e, _)| (*s..*e).contains(&i)) {
+                assert_eq!(o, splice, "{rate}: removed input {i} lands on its splice");
+            } else {
+                let (back, _) = rr_dr60::timeline::onepass_output_to_input(
+                    o,
+                    r.latency_samples,
+                    &r.events,
+                    true,
+                );
+                assert_eq!(back, i, "{rate}: input {i} → output {o} → input {back}");
+            }
+        }
+    }
+}
+
+#[test]
 fn final_pause_clamps_to_the_end() {
     let rate = 8000;
     let mut x = tone(rate, 0.3, 0.5);

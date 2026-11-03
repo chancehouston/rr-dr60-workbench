@@ -19,13 +19,23 @@ pub const BLOCK: usize = 4096;
 pub struct RenderRequest {
     /// The converted input (a clone of `Input.samples`, no copy).
     pub input: Arc<[f32]>,
-    /// The input's digest (staleness, the sidecar).
+    /// The input's digest of its converted samples (staleness, the sidecar; D9).
     pub input_sha256: [u8; 32],
+    /// The input file's name, frames and raw digest, so a sidecar is written from the render
+    /// alone (post-implementation review, coach 2).
+    pub file_name: String,
+    /// The input's frames per channel.
+    pub frames: u64,
+    /// SHA-256 of the input file's bytes.
+    pub raw_sha256: [u8; 32],
+    /// The input's rate.
+    pub rate_hz: u32,
     /// The selected channel.
     pub channel: Channel,
     /// The settings.
     pub settings: Settings,
-    /// The live and component values, in manifest order.
+    /// The live and component values, in manifest order (the slot precedes its parameters; the
+    /// live controls are independent on a fresh engine; spec Clarifications, implementation).
     pub engine_values: Vec<(u32, ControlReading)>,
     /// Whether the tail is appended (D7).
     pub tail: bool,
@@ -83,6 +93,26 @@ pub fn gate_reached(s: &Settings) -> bool {
                 | Tap::AfterSpeaker
                 | Tap::AfterEarphone
         )
+}
+
+impl RenderRequest {
+    /// The request for `input` with `panel`'s values (the session's one constructor).
+    pub fn new(input: &input::Input, panel: &crate::panel::Panel, tail: bool) -> Self {
+        let (settings, engine_values) = panel.snapshot();
+        Self {
+            input: input.samples.clone(),
+            input_sha256: input.input_sha256,
+            file_name: input.file_name.clone(),
+            frames: input.frames,
+            raw_sha256: input.raw_sha256,
+            rate_hz: input.rate_hz,
+            channel: input.channel,
+            settings,
+            engine_values,
+            tail,
+            block: BLOCK,
+        }
+    }
 }
 
 /// Builds the fresh engine of a render and applies the engine values (research R-09).

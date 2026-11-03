@@ -197,7 +197,7 @@ description: "Tasks for feature 001, the offline render session"
 - [X] T034 [P] Add `core/examples/desk_files.rs`, which writes the quickstart's desk files into a given folder (the folder is ignored by `.gitignore`).
 - [X] T035 Update `README.md` (status, the dependency license note for symphonia's MPL-2.0, macOS-only playback), `CLAUDE.md` (status, the lessons learned) and `CHANGELOG.md` (001's entry).
 - [X] T036 Run the gate: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, `cargo test -p workbench_core --test monitor_alloc -- --test-threads=1`, and the release `render_speed`. Record the figures in `specs/001-offline-render-session/records.md`.
-- [ ] T037 Post-implementation reviews: `speckit-coach` and `hw-emulation-reviewer` on the branch. Apply the findings at their defaults, and record them in `records.md`.
+- [X] T037 Post-implementation reviews: `speckit-coach` and `hw-emulation-reviewer` on the branch. Apply the findings at their defaults, and record them in `records.md`.
 
 ## Dependencies
 

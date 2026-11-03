@@ -11,6 +11,7 @@ pub mod input;
 pub mod monitor;
 pub mod panel;
 pub mod render;
+pub mod session;
 pub mod sidecar;
 pub mod text;
 

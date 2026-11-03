@@ -5,20 +5,14 @@ mod support;
 use support::*;
 use workbench_core::render::gate_reached;
 
-const TAPS: [&str; 12] = [
-    "after_record",
-    "after_playback",
-    "after_agc",
-    "after_vas",
-    "after_decoder",
-    "route_output",
-    "after_volume_amp",
-    "after_speaker",
-    "after_earphone",
-    "after_mic_capsule",
-    "after_mic_amp",
-    "after_insert",
-];
+/// Every tap, from the engine's tap control (so a new tap is covered without a change here).
+fn taps() -> Vec<&'static str> {
+    let e = rr_dr60::controls::control("tap").expect("the tap control");
+    let rr_dr60::controls::ControlValue::Choice { options, .. } = e.value else {
+        panic!("the tap is a choice")
+    };
+    options.iter().map(|o| o.identifier).collect()
+}
 
 /// A burst then 3 s of silence: drop mode removes the silence exactly when the gate runs.
 #[test]
@@ -26,7 +20,9 @@ fn gate_predicate_pinned() {
     let rate = 16000;
     let mut x = tone(rate, 0.3, 0.5);
     x.resize(x.len() + 3 * rate as usize, 0.0);
-    for tap in TAPS {
+    let taps = taps();
+    assert!(taps.len() >= 12);
+    for tap in taps {
         for enabled in [true, false] {
             let req = request(rate, &x, |p| {
                 if tap == "after_earphone" {

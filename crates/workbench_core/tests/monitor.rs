@@ -40,3 +40,20 @@ fn fill_rules() {
         workbench_core::monitor::NO_REQUEST
     );
 }
+
+#[test]
+fn a_mapped_request_adds_what_played_since() {
+    // Hardware review B2: the UI read the original at 2 and mapped it to render 1; a buffer of
+    // 2 played before the swap, so the render starts at 1 + 2 = 3, neither repeating nor skipping.
+    let t = takes();
+    let s = Shared::default();
+    s.playing.store(true, Ordering::Relaxed);
+    s.request(Take::Original, 2);
+    let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
+    fill(&t, &s, &mut l, &mut r); // the jump's swap, then a buffer of 2
+    assert_eq!(s.cursor(), (Take::Original, 4));
+    s.request_from(Take::Render, 1, 2);
+    fill(&t, &s, &mut l, &mut r);
+    assert_eq!(l, [-3.0, -4.0]);
+    assert_eq!(s.cursor(), (Take::Render, 5));
+}

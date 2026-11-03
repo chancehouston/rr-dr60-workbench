@@ -5,7 +5,6 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use crate::input::Input;
 use crate::render::Render;
 use crate::sidecar;
 
@@ -137,14 +136,9 @@ pub fn wav_bytes(samples: &[f32], rate_hz: u32) -> Result<Vec<u8>, ExportError> 
 ///
 /// The size refusal, or a file operation's failure after which neither a new pair nor a mixed
 /// pair remains.
-pub fn export(
-    fs: &mut impl ExportFs,
-    stem: &Path,
-    input: &Input,
-    render: &Render,
-) -> Result<(), ExportError> {
-    let wav = wav_bytes(&render.samples, input.rate_hz)?;
-    let side = sidecar::write(input, render);
+pub fn export(fs: &mut impl ExportFs, stem: &Path, render: &Render) -> Result<(), ExportError> {
+    let wav = wav_bytes(&render.samples, render.request.rate_hz)?;
+    let side = sidecar::write(render);
     let (wav_path, side_path) = paths(stem);
     let mut wav_part = wav_path.clone().into_os_string();
     wav_part.push(".partial");

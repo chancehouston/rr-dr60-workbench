@@ -131,19 +131,19 @@ Each requirement maps to a test in `crates/workbench_core/tests/` (T) or a desk-
 | FR-004, SC-003, US2 AS1 | T `panel::presents_every_control`, `panel::grows_with_the_engine` (extended entry list) |
 | FR-005, US2 AS5 | T `panel::not_on_the_one_pass_and_read_only` |
 | FR-006, US2 AS3, AS4 | T `panel::engine_checks_each_class` (refusals in the engine's words; the tap against the route) |
-| FR-007, SC-001, US1 AS1, US2 AS2, AS6 | T `render_oracle` (seven rates × three stimuli × drop/mute; whole-call and block-size-1 oracles; the slot) |
-| D7, P12 | T `tail_emits_the_input`, `tail_is_sufficient`, `tail_zero_at_front_taps` |
-| FR-008, US1 AS5 | T `render::progress_and_cancel` (progress at ≥ 2 Hz on a 60 s input; cancel within 1 s; the previous render kept) |
-| FR-009 | T `render::readings` (each reading; the gate predicate over every tap × enabled; not-emitted 0 cases) |
-| FR-010, SC-005, US1 AS2 | T `ab::map_and_inverse`; D steps 3, 9 |
-| FR-011 | T `monitor_alloc` (own binary), `monitor::fill_rules`; D step 11 |
-| FR-012, US3 AS1 | T `export::roundtrip` (tag 0xFFFE + IEEE-float GUID), `export::failure_leaves_no_pair`, `export::refuses_oversize` |
-| FR-013 | T `sidecar::values_roundtrip` (−0.0, every range's ends, every type) |
-| FR-014, SC-002, US3 AS2 – AS5 | T `sidecar::reproduces` (seven rates), `sidecar::differences_listed`, `sidecar::refusals` |
-| FR-015 | T `source_scan::no_clock_or_os_randomness` (`SystemTime`, `Instant` in engine inputs, `rand`, `getrandom`) |
-| FR-016 | T `wording` (every `text` string against the engine's denylist + the supplementary list) |
-| FR-017 | T `reach` (prints 12/70; asserts the listed methods) |
+| FR-007, SC-001, US1 AS1, US2 AS2, AS6 | T `render_oracle::{render_equals_the_oracles, panel_free_oracle_with_live_values}` (seven rates × three stimuli × drop/mute with the gate pausing; whole-call and block-size-1; a panel-free oracle with non-default live and slot values) |
+| D7, P12 | T `tail::{tail_emits_the_input, tail_is_sufficient, tail_at_the_defaults, tail_zero_at_front_taps}` |
+| FR-008, US1 AS5 | T `render_progress::progress_and_cancel` (progress at ≥ 2 Hz on a 60 s input; cancel within 1 s; the previous render kept) |
+| FR-009 | T `readings::{gate_predicate_pinned, readings_on_known_stimuli, paused_at_end_reads_the_last_call}` (the taps from the manifest) |
+| FR-010, SC-005, US1 AS2 | T `ab::{hand_built_exact_values, round_trips_at_every_rate, the_map_is_exact, final_pause_clamps_to_the_end}`, `monitor::a_mapped_request_adds_what_played_since`; D steps 3, 9 |
+| FR-011 | T `monitor_alloc::fill_allocates_nothing` (own binary), `monitor::fill_rules`; D step 11 |
+| FR-012, US3 AS1 | T `export::{roundtrip, failure_leaves_no_pair, refuses_oversize, overwrite_replaces_the_pair}` |
+| FR-013 | T `sidecar::values_roundtrip` (−0.0, every range end with the three skipped controls listed, a non-default switch and choice) |
+| FR-014, SC-002, US3 AS2 – AS5 | T `sidecar::{grammar, reproduces, differences_listed}`, `session::{a_channel_change_keeps_the_render_stale_and_its_sidecar_true, a_mix_sidecar_restores_the_mix, the_tail_switch_survives_a_front_tap}` |
+| FR-015 | T `source_scan::no_clock_or_os_randomness` |
+| FR-016 | T `wording::{the_matcher_works, every_workbench_string_passes}` (every literal in the sources and `text::all()`) |
+| FR-017 | T `reach::{reach, outside_items_are_used}` (prints 12/70; asserts the listed methods and the items outside `Pipeline`) |
 | US2 AS7 | T `panel::stale_and_reset` |
-| SC-004 | T `render_speed` (release, ignored; quoted) |
-| SC-006, edge cases | T `refusals_leave_session_unchanged`, `edge::empty_file`, `edge::metadata_and_many_channels`, `edge::non_finite_counted`, `export::overwrite_replaces_the_pair` |
+| SC-004 | T `render_speed::one_minute_at_48k` (release, ignored; quoted) |
+| SC-006, edge cases | T `session::{refusals_leave_session_unchanged, a_render_of_another_file_is_discarded}`, `edge::{empty_file, metadata_and_many_channels, non_finite_counted_and_passed}`, `export::overwrite_replaces_the_pair` |
 | SC-007 | D the whole checklist |

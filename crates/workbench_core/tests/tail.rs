@@ -65,11 +65,16 @@ fn tail_is_sufficient() {
                         .samples
                         .iter()
                         .fold(0.0f32, |m, v| m.max(v.abs()));
+                    let margin = 20.0 * (f64::from(floor) / f64::from(extra.max(1e-30))).log10();
+                    println!(
+                        "{tag}: after the tail {extra:e}, the coder on silence {floor:e}, margin {margin:.1} dB"
+                    );
                     assert!(
                         floor > 0.0 && extra <= floor,
                         "{tag}: extra {extra:e} above the coder on silence {floor:e}"
                     );
                 } else {
+                    println!("{tag}: after the tail {extra:e}");
                     assert!(
                         extra < 1e-5,
                         "{tag}: extra output peaks at {extra:e} (−100 dBFS is 1e-5)"
@@ -77,6 +82,37 @@ fn tail_is_sufficient() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn tail_at_the_defaults() {
+    // The default engine (hiss and coder on): the prefix identity, and the level after the tail
+    // reported beside the default engine's own output on digital silence.
+    for rate in RATES {
+        let x = tone(rate, 0.5, 0.5);
+        let r = run(&request(rate, &x, |_| {}));
+        let longer = with_tail(&x, r.tail_samples + u64::from(rate));
+        let mut req2 = request(rate, &longer, |_| {});
+        req2.tail = false;
+        let r2 = run(&req2);
+        assert_eq!(
+            &r2.samples[..r.samples.len()],
+            &r.samples[..],
+            "{rate}: prefix"
+        );
+        let extra = r2.samples[r.samples.len()..]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        let mut silent = request(rate, &vec![0.0; x.len()], |_| {});
+        silent.tail = false;
+        let floor = run(&silent)
+            .samples
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        println!(
+            "{rate} Hz defaults: after the tail {extra:e}, the default engine on silence {floor:e}"
+        );
     }
 }
 

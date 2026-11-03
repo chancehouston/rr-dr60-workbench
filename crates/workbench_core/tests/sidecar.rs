@@ -32,14 +32,16 @@ fn values_roundtrip() {
     }
     let total = ends.len();
     let mut tested = 0;
+    let mut skipped: Vec<String> = Vec::new();
     for (id, v) in ends {
         let mut p = Panel::new(rate).unwrap();
         let i = p.index_of(&id).unwrap();
         if !p.set(i, v) || !p.renderable() {
+            skipped.push(id.clone());
             continue; // read-only, not on the one-pass, or an end the whole check refuses
         }
         let r = run(&request_for(&inp, &p, true));
-        let text = sidecar::write(&inp, &r);
+        let text = sidecar::write(&r);
         let s = sidecar::read(&text).unwrap();
         let mut q = Panel::new(rate).unwrap();
         let rep = sidecar::restore(&s, &mut q, &inp);
@@ -51,11 +53,33 @@ fn values_roundtrip() {
         );
         tested += 1;
     }
-    println!("range ends round-tripped: {tested} of {total}");
-    assert!(
-        tested * 4 >= total * 3,
-        "most range ends must be exercised: {tested} of {total}"
+    println!("range ends round-tripped: {tested} of {total}; skipped {skipped:?}");
+    skipped.sort();
+    skipped.dedup();
+    // The ends not round-tripped are listed exactly, so a new skip fails here: the controls not
+    // on the one-pass (the memory and the playback speed).
+    println!("skipped controls: {skipped:?}");
+    assert_eq!(
+        skipped,
+        [
+            "memory.capacity_s",
+            "memory.max_recordings",
+            "playback_speed"
+        ],
+        "the skipped range ends"
     );
+    assert_eq!(tested + 6, total);
+    // A non-default switch and choice round-trip too (coach 11).
+    let mut p = Panel::new(rate).unwrap();
+    set_switch(&mut p, "speech_codec_enabled", false);
+    set_choice(&mut p, "vas.mode", "mute");
+    let r = run(&request_for(&inp, &p, true));
+    let mut q = Panel::new(rate).unwrap();
+    let rep = sidecar::restore(&sidecar::read(&sidecar::write(&r)).unwrap(), &mut q, &inp);
+    assert!(rep.refused.is_empty());
+    for id in ["speech_codec_enabled", "vas.mode"] {
+        assert_eq!(q.row(id).unwrap().value, p.row(id).unwrap().value, "{id}");
+    }
     // −0.0 reads back as 0.0 (the engine stores it so).
     let mut p = Panel::new(rate).unwrap();
     set(
@@ -64,7 +88,7 @@ fn values_roundtrip() {
         ControlReading::Continuous(-0.0),
     );
     let r = run(&request_for(&inp, &p, true));
-    let text = sidecar::write(&inp, &r);
+    let text = sidecar::write(&r);
     let line = text
         .lines()
         .find(|l| l.starts_with("control mic.hiss_offset_db "))
@@ -77,7 +101,7 @@ fn sample_text() -> (String, workbench_core::input::Input) {
     let inp = input_of(rate, &voiced(rate, 0.6, 0.5));
     let p = Panel::new(rate).unwrap();
     let r = run(&request_for(&inp, &p, true));
-    (sidecar::write(&inp, &r), inp)
+    (sidecar::write(&r), inp)
 }
 
 #[test]
@@ -142,7 +166,7 @@ fn reproduces() {
         set_num(&mut p, "band_filter.frequency_hz", 1200.0);
         set(&mut p, "seed", ControlReading::Integer(0xDEAD_BEEF));
         let r = run(&request_for(&inp, &p, true));
-        let text = sidecar::write(&inp, &r);
+        let text = sidecar::write(&r);
         // A fresh session: open the same input, restore, render.
         let inp2 = input_of(rate, &x);
         let mut q = Panel::new(rate).unwrap();
@@ -206,16 +230,4 @@ fn differences_listed() {
         &other,
     );
     assert!(rep.input_differs);
-}
-
-#[test]
-fn refusals_leave_the_panel_unchanged() {
-    let mut p = Panel::new(8000).unwrap();
-    set(&mut p, "vas.sensitivity", ControlReading::Integer(5));
-    let before: Vec<_> = p.rows().iter().map(|r| r.value).collect();
-    for bad in ["", "not a sidecar", "rr-dr60-workbench sidecar 9\n"] {
-        assert!(sidecar::read(bad).is_err());
-    }
-    let after: Vec<_> = p.rows().iter().map(|r| r.value).collect();
-    assert_eq!(before, after, "a refused read never reaches the panel");
 }

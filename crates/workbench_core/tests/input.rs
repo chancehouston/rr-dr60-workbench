@@ -59,8 +59,11 @@ fn refuses_formats_rates_and_widths() {
         false,
     );
     assert!(
-        open(e20, Channel::Index(0)).is_err(),
-        "20-in-24 must be refused"
+        matches!(
+            open(e20, Channel::Index(0)),
+            Err(OpenError::UnsupportedSampleType(_))
+        ),
+        "20-in-24 must be refused as a sample type, not by a probe failure"
     );
     // 64-bit float.
     let f64data: Vec<u8> = x.iter().flat_map(|&v| f64::from(v).to_le_bytes()).collect();

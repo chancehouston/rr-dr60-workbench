@@ -467,8 +467,13 @@ pub fn request(
     assert!(panel.renderable(), "test panel must be renderable");
     let (settings, engine_values) = panel.snapshot();
     let input: std::sync::Arc<[f32]> = input.to_vec().into();
+    let sha = workbench_core::input::samples_sha256(&input);
     workbench_core::render::RenderRequest {
-        input_sha256: workbench_core::input::samples_sha256(&input),
+        input_sha256: sha,
+        file_name: "stimulus".into(),
+        frames: input.len() as u64,
+        raw_sha256: sha,
+        rate_hz: rate,
         input,
         channel: workbench_core::input::Channel::Index(0),
         settings,
@@ -550,14 +555,5 @@ pub fn request_for(
     panel: &workbench_core::panel::Panel,
     tail: bool,
 ) -> workbench_core::render::RenderRequest {
-    let (settings, engine_values) = panel.snapshot();
-    workbench_core::render::RenderRequest {
-        input: input.samples.clone(),
-        input_sha256: input.input_sha256,
-        channel: input.channel,
-        settings,
-        engine_values,
-        tail,
-        block: workbench_core::render::BLOCK,
-    }
+    workbench_core::render::RenderRequest::new(input, panel, tail)
 }

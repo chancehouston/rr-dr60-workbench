@@ -18,7 +18,7 @@ fn roundtrip() {
         let panel = workbench_core::panel::Panel::new(rate).unwrap();
         let r = run(&request_for(&inp, &panel, true));
         let stem = dir.join(format!("r{rate}"));
-        export::export(&mut RealFs, &stem, &inp, &r).unwrap();
+        export::export(&mut RealFs, &stem, &r).unwrap();
         let (wav, side) = export::paths(&stem);
         let mut rd = hound::WavReader::open(&wav).unwrap();
         let spec = rd.spec();
@@ -120,13 +120,13 @@ fn failure_leaves_no_pair() {
         fs
     };
     let mut clean = old();
-    export::export(&mut clean, stem, &inp, &r).unwrap();
+    export::export(&mut clean, stem, &r).unwrap();
     let total = clean.ops;
     assert!(total >= 4);
     for k in 1..=total {
         let mut fs = old();
         fs.fail_at = Some(k);
-        let res = export::export(&mut fs, stem, &inp, &r);
+        let res = export::export(&mut fs, stem, &r);
         assert!(matches!(res, Err(ExportError::Io(_))), "op {k}");
         let w = fs.files.get(&wav).cloned();
         let s = fs.files.get(&side).cloned();
@@ -159,8 +159,8 @@ fn overwrite_replaces_the_pair() {
     let ra = run(&request_for(&a, &panel, true));
     let rb = run(&request_for(&b, &panel, true));
     let stem = dir.join("same.wav");
-    export::export(&mut RealFs, &stem, &a, &ra).unwrap();
-    export::export(&mut RealFs, &stem, &b, &rb).unwrap();
+    export::export(&mut RealFs, &stem, &ra).unwrap();
+    export::export(&mut RealFs, &stem, &rb).unwrap();
     let (wav, side) = export::paths(&stem);
     let n = hound::WavReader::open(&wav).unwrap().len() as usize;
     assert_eq!(n, rb.samples.len());

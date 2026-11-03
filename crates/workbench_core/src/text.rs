@@ -68,6 +68,20 @@ pub const AB_ENGINE_MAP: &str = "Same moment (the engine's one-pass map)";
 pub const AB_SAME_SECONDS: &str = "Same seconds";
 /// Overloads counted on the device.
 pub const OVERLOADS: &str = "Device overloads";
+/// A sidecar opened before its input.
+pub const OPEN_INPUT_FIRST: &str = "Open the input file before its sidecar";
+/// Exporting a stale render (coach 2: allowed, from the render's own request).
+pub const STALE_EXPORT: &str =
+    "This exports the last render as it was made, with its own settings, not the current panel";
+
+/// The headroom hint beside the peak warning (hardware review B8): the monitor volume that keeps
+/// the device below full scale. The workbench never scales automatically.
+pub fn headroom_hint(peak: f32) -> String {
+    format!(
+        "Set the monitor volume to {:.2} or lower to hear it without the device clipping",
+        1.0 / peak.max(1.0)
+    )
+}
 
 /// The supported rates, from the engine.
 pub fn supported_rates() -> String {
@@ -131,10 +145,13 @@ pub fn all() -> Vec<String> {
         AB_ENGINE_MAP,
         AB_SAME_SECONDS,
         OVERLOADS,
+        OPEN_INPUT_FIRST,
+        STALE_EXPORT,
     ]
     .iter()
     .map(|s| (*s).to_owned())
     .collect();
     v.push(supported_rates());
+    v.push(headroom_hint(2.0));
     v
 }

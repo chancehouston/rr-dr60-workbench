@@ -159,8 +159,10 @@ pub fn convert_i32(src: &[i32], dst: &mut [f32]) {
     }
 }
 
-/// The mean of integer channels already scaled to the container's full scale: summed exactly in
-/// `i64`, divided in `f64`, rounded once to `f32` (research R-02, B9). `scale` is 2^(b−1).
+/// The mean of integer channels: summed exactly in `i64`, divided by the channel count and by
+/// `scale` = 2^(b−1) in `f64`, then rounded to `f32` (research R-02). With a channel count that is
+/// not a power of two the `f64` divide rounds once before the cast: deterministic, and far below
+/// one `f32` step.
 pub fn mix_integers(channels: &[&[i32]], scale: f64) -> Vec<f32> {
     let n = channels.first().map_or(0, |c| c.len());
     let count = channels.len() as f64;
@@ -460,9 +462,8 @@ impl Accumulator {
         let mut out = vec![0.0f32; src.len()];
         match st {
             SampleType::I16 => {
-                for (d, &s) in out.iter_mut().zip(&src) {
-                    *d = s as f32 / 32768.0;
-                }
+                let narrow: Vec<i16> = src.iter().map(|&s| s as i16).collect();
+                convert_i16(&narrow, &mut out);
             }
             SampleType::I24 => convert_i24(&src, &mut out),
             SampleType::I32 => convert_i32(&src, &mut out),

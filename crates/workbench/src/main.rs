@@ -2,13 +2,13 @@
 //!
 //! Spec 001, the offline render session: open a file, edit every manifest control, render through
 //! a fresh one-pass engine with a tail, play the original and the render A/B on the engine's map,
-//! export the render with its sidecar and reopen a sidecar. The logic is in `workbench_core`;
-//! this file is the thin egui view (constitution V).
+//! export the render with its sidecar and reopen a sidecar. The logic is in `workbench_core`
+//! (its `Session` holds the rules); this file is the thin egui view (constitution V).
 
 mod playback;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -18,11 +18,12 @@ use eframe::egui;
 use rr_dr60::control_map::ControlReading;
 use rr_dr60::controls::ControlValue;
 use workbench_core::ab::{self, AbMode};
-use workbench_core::input::{self, Channel, Input, SampleType};
+use workbench_core::input::{self, Channel, SampleType};
 use workbench_core::monitor::{Shared, Take, Takes};
-use workbench_core::panel::{Panel, RowStatus};
-use workbench_core::render::{self, Render, RenderRequest};
-use workbench_core::{export, sidecar, text};
+use workbench_core::panel::{self, Panel, RowStatus};
+use workbench_core::render::{self, Render};
+use workbench_core::session::Session;
+use workbench_core::{export, text};
 
 use playback::Playback;
 
@@ -36,7 +37,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "rr-dr60 workbench",
         options,
-        Box::new(|_cc| Ok(Box::<Workbench>::default())),
+        Box::new(|_cc| Ok(Box::new(Workbench::new()))),
     )
 }
 
@@ -48,13 +49,8 @@ struct Job {
     rx: Receiver<Result<Option<Render>, String>>,
 }
 
-#[derive(Default)]
 struct Workbench {
-    path: Option<PathBuf>,
-    input: Option<Input>,
-    panel: Option<Panel>,
-    tail: bool,
-    render: Option<Render>,
+    session: Session,
     job: Option<Job>,
     shared: Arc<Shared>,
     playback: Option<Playback>,
@@ -62,16 +58,21 @@ struct Workbench {
     monitor_volume: f32,
     int_edits: HashMap<u32, String>,
     messages: Vec<String>,
-    initialized: bool,
 }
 
 impl Workbench {
-    fn init(&mut self) {
-        if !self.initialized {
-            self.tail = true;
-            self.monitor_volume = 1.0;
-            self.shared.set_volume(1.0);
-            self.initialized = true;
+    fn new() -> Self {
+        let shared = Arc::new(Shared::default());
+        shared.set_volume(1.0);
+        Self {
+            session: Session::new(),
+            job: None,
+            shared,
+            playback: None,
+            ab_mode: AbMode::EngineMap,
+            monitor_volume: 1.0,
+            int_edits: HashMap::new(),
+            messages: Vec::new(),
         }
     }
 
@@ -82,43 +83,27 @@ impl Workbench {
     }
 
     fn open_file(&mut self, path: PathBuf, channel: Channel) {
-        self.stop_playback();
-        match input::open(&path, channel) {
-            Ok(inp) => {
-                let keep_panel = self
-                    .panel
-                    .as_ref()
-                    .is_some_and(|p| p.rate_hz() == inp.rate_hz)
-                    && self.path.as_ref() == Some(&path);
-                if !keep_panel {
-                    self.panel = Panel::new(inp.rate_hz).ok();
-                    self.render = None;
+        let before = self.session.input().map(|i| i.raw_sha256);
+        match self.session.open(&path, channel) {
+            Ok(()) => {
+                // A render of the old input must not land on the new one (coach 1).
+                if let Some(job) = self.job.take() {
+                    job.cancel.store(true, Ordering::Relaxed);
+                }
+                self.stop_playback();
+                if self.session.input().map(|i| i.raw_sha256) != before {
                     self.int_edits.clear();
                 }
-                self.path = Some(path);
-                self.input = Some(inp);
                 self.messages.clear();
             }
             Err(e) => self.messages = vec![e.to_string()],
         }
     }
 
-    fn request(&self) -> Option<RenderRequest> {
-        let (inp, panel) = (self.input.as_ref()?, self.panel.as_ref()?);
-        let (settings, engine_values) = panel.snapshot();
-        Some(RenderRequest {
-            input: inp.samples.clone(),
-            input_sha256: inp.input_sha256,
-            channel: inp.channel,
-            settings,
-            engine_values,
-            tail: self.tail,
-            block: render::BLOCK,
-        })
-    }
-
     fn start_render(&mut self, ctx: &egui::Context) {
-        let Some(req) = self.request() else { return };
+        let Some(req) = self.session.request() else {
+            return;
+        };
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -138,13 +123,17 @@ impl Workbench {
     }
 
     fn poll_job(&mut self) {
-        let Some(job) = &self.job else { return };
+        let Some(job) = &self.job else {
+            return;
+        };
         if let Ok(result) = job.rx.try_recv() {
             self.job = None;
             match result {
                 Ok(Some(r)) => {
                     self.stop_playback();
-                    self.render = Some(r);
+                    if !self.session.accept_render(r) {
+                        self.messages = vec!["A render of another file was discarded".into()];
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => self.messages = vec![e],
@@ -153,17 +142,15 @@ impl Workbench {
     }
 
     fn play(&mut self, take: Take) {
-        let (Some(inp), Some(r)) = (&self.input, &self.render) else {
-            if let (Some(inp), Take::Original) = (&self.input, take) {
-                let empty: Arc<[f32]> = Arc::from(Vec::new());
-                self.start_takes(inp.samples.clone(), empty, inp.rate_hz, take);
-            }
+        let Some(inp) = self.session.input() else {
             return;
         };
-        self.start_takes(inp.samples.clone(), r.samples.clone(), inp.rate_hz, take);
-    }
-
-    fn start_takes(&mut self, original: Arc<[f32]>, render: Arc<[f32]>, rate: u32, take: Take) {
+        let render: Arc<[f32]> = self
+            .session
+            .render()
+            .map_or_else(|| Arc::from(Vec::new()), |r| r.samples.clone());
+        let original = inp.samples.clone();
+        let rate = inp.rate_hz;
         if self.playback.is_none() {
             let takes = Takes {
                 original,
@@ -178,16 +165,16 @@ impl Workbench {
                 }
             }
             self.shared.request(take, 0);
-        } else {
-            let (_, pos) = self.shared.cursor();
-            self.shared.request(take, pos);
+        } else if self.shared.cursor().0 != take {
+            // Playing the other take goes through the A/B map (hardware review B2).
+            self.switch();
         }
         self.shared.playing.store(true, Ordering::Relaxed);
     }
 
-    /// The A/B switch at the mapped position (D6).
+    /// The A/B switch at the mapped position (D6), based on the position read now.
     fn switch(&mut self) {
-        let (Some(inp), Some(r)) = (&self.input, &self.render) else {
+        let (Some(inp), Some(r)) = (self.session.input(), self.session.render()) else {
             return;
         };
         if self.playback.is_none() {
@@ -195,22 +182,29 @@ impl Workbench {
         }
         let (take, pos) = self.shared.cursor();
         match take {
-            Take::Original => self
-                .shared
-                .request(Take::Render, ab::to_render(pos, r, self.ab_mode)),
-            Take::Render => self.shared.request(
+            Take::Original => {
+                self.shared
+                    .request_from(Take::Render, ab::to_render(pos, r, self.ab_mode), pos);
+            }
+            Take::Render => self.shared.request_from(
                 Take::Original,
                 ab::to_original(pos, r, self.ab_mode, inp.samples.len() as u64),
+                pos,
             ),
         }
     }
 
     fn export(&mut self) {
-        let (Some(inp), Some(r)) = (&self.input, &self.render) else {
+        let Some(r) = self.session.render() else {
             return;
         };
-        let name = format!("{}-render.wav", inp.file_name.trim_end_matches(".wav"));
-        let Some(path) = rfd::FileDialog::new().set_file_name(&name).save_file() else {
+        let stem = Path::new(&r.request.file_name)
+            .file_stem()
+            .map_or_else(|| "render".to_owned(), |s| s.to_string_lossy().into_owned());
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{stem}-render.wav"))
+            .save_file()
+        else {
             return;
         };
         let (wav, side) = export::paths(&path);
@@ -223,10 +217,14 @@ impl Workbench {
                 return;
             }
         }
-        self.messages = vec![match export::export(&mut export::RealFs, &path, inp, r) {
+        let mut m = vec![match export::export(&mut export::RealFs, &path, r) {
             Ok(()) => format!("Exported {} and {}", wav.display(), side.display()),
             Err(e) => e.to_string(),
         }];
+        if self.session.is_stale() {
+            m.push(text::STALE_EXPORT.to_owned());
+        }
+        self.messages = m;
     }
 
     fn open_sidecar(&mut self) {
@@ -236,27 +234,22 @@ impl Workbench {
         else {
             return;
         };
-        let text = match std::fs::read_to_string(&path) {
+        let content = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {
                 self.messages = vec![format!("{}: {e}", text::OPEN_IO)];
                 return;
             }
         };
-        let s = match sidecar::read(&text) {
-            Ok(s) => s,
+        let rep = match self.session.restore(&content) {
+            Ok(rep) => rep,
             Err(e) => {
                 self.messages = vec![e.to_string()];
                 return;
             }
         };
-        let (Some(inp), Some(panel)) = (self.input.as_ref(), self.panel.as_mut()) else {
-            self.messages = vec!["Open the input file before its sidecar".into()];
-            return;
-        };
-        let rep = sidecar::restore(&s, panel, inp);
+        self.stop_playback();
         self.int_edits.clear();
-        self.tail = rep.tail;
         let mut m = vec![format!(
             "Restored {} controls from {}",
             rep.applied,
@@ -285,13 +278,10 @@ impl Workbench {
                 "The sidecar's rate was {r} Hz; the session uses the file's rate"
             ));
         }
-        let channel = rep.channel;
-        self.messages = m;
-        if let (Some(c), Some(p)) = (channel, self.path.clone())
-            && self.input.as_ref().is_some_and(|i| i.channel != c)
-        {
-            self.open_file(p, c);
+        if !rep.renderable {
+            m.push("The restored values are not renderable as they stand: see the panel".into());
         }
+        self.messages = m;
     }
 }
 
@@ -301,7 +291,6 @@ fn secs(n: u64, rate: u32) -> String {
 
 impl eframe::App for Workbench {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.init();
         let ctx = ui.ctx().clone();
         self.poll_job();
         if self.playback.as_ref().is_some_and(Playback::device_lost) {
@@ -314,18 +303,19 @@ impl eframe::App for Workbench {
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.switch();
         }
-
         egui::Panel::top("file").show(ui, |ui| self.file_bar(ui));
         egui::Panel::left("controls")
             .resizable(true)
             .default_size(560.0)
             .show(ui, |ui| self.controls_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.session(ui, &ctx));
+        egui::CentralPanel::default().show(ui, |ui| self.session_view(ui, &ctx));
     }
 }
 
 impl Workbench {
     fn file_bar(&mut self, ui: &mut egui::Ui) {
+        let mut open: Option<(PathBuf, Channel)> = None;
+        let mut sidecar = false;
         ui.horizontal(|ui| {
             ui.strong(format!(
                 "rr_dr60 {} ({})",
@@ -337,9 +327,9 @@ impl Workbench {
                     .add_filter("audio", &["wav", "aif", "aiff", "aifc", "flac"])
                     .pick_file()
             {
-                self.open_file(p, Channel::Index(0));
+                open = Some((p, Channel::Index(0)));
             }
-            if let Some(inp) = &self.input {
+            if let Some(inp) = self.session.input() {
                 ui.label(format!(
                     "{} · {:?} {:?} · {} Hz · {} ch · {}",
                     inp.file_name,
@@ -371,27 +361,37 @@ impl Workbench {
                         }
                     });
                 if chosen != current
-                    && let Some(p) = self.path.clone()
+                    && let Some(p) = self.session.path()
                 {
-                    self.open_file(p, chosen);
+                    open = Some((p.to_path_buf(), chosen));
                 }
             }
             if ui.button("Open sidecar…").clicked() {
-                self.open_sidecar();
+                sidecar = true;
             }
         });
+        if let Some((p, c)) = open {
+            self.open_file(p, c);
+        }
+        if sidecar {
+            self.open_sidecar();
+        }
     }
 
     fn controls_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(panel) = self.panel.as_mut() else {
+        let int_edits = &mut self.int_edits;
+        let Some(panel) = self.session.panel_mut() else {
             ui.label("Open a file to edit the engine's controls.");
             return;
         };
+        if let Some(why) = panel.general_refusal() {
+            ui.colored_label(egui::Color32::LIGHT_RED, why);
+        }
         ui.horizontal(|ui| {
             ui.heading(format!("{} controls", panel.rows().len()));
             if ui.button("Reset to defaults").clicked() {
                 panel.reset_to_defaults();
-                self.int_edits.clear();
+                int_edits.clear();
             }
         });
         let mut stages: Vec<u8> = panel.rows().iter().map(|r| r.entry.stage).collect();
@@ -400,37 +400,48 @@ impl Workbench {
         let mut edits: Vec<(u32, ControlReading)> = Vec::new();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for stage in stages {
-                let title = if stage == 0 { "No stage".to_owned() } else { format!("Stage {stage}") };
-                egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
-                    egui::Grid::new(("grid", stage)).num_columns(3).striped(true).show(ui, |ui| {
-                        for row in panel.rows().iter().filter(|r| r.entry.stage == stage) {
-                            let e = &row.entry;
-                            let hover = format!(
-                                "{}\n\n{}\nkind: {} · timing: {}\nsources: {}\nassumptions: {}",
-                                e.identifier,
-                                e.description,
-                                text::kind_label(e.kind),
-                                text::timing_label(e.timing),
-                                e.sources.join(", "),
-                                e.assumptions.join(", ")
-                            );
-                            ui.label(e.name).on_hover_text(hover);
-                            let enabled = matches!(row.status, RowStatus::Accepted | RowStatus::Refused(_));
-                            ui.add_enabled_ui(enabled, |ui| {
-                                if let Some(v) = editor(ui, row.index, &e.value, row.value, e.unit, &mut self.int_edits) {
-                                    edits.push((row.index, v));
+                egui::CollapsingHeader::new(panel::stage_title(stage))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new(("grid", stage))
+                            .num_columns(3)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for row in panel.rows().iter().filter(|r| r.entry.stage == stage) {
+                                    let e = &row.entry;
+                                    let hover = format!(
+                                        "{}\n\n{}\nkind: {} · timing: {}\nsources: {}\nassumptions: {}",
+                                        e.identifier,
+                                        e.description,
+                                        text::kind_label(e.kind),
+                                        text::timing_label(e.timing),
+                                        e.sources.join(", "),
+                                        e.assumptions.join(", ")
+                                    );
+                                    ui.label(e.name).on_hover_text(hover);
+                                    let enabled = matches!(
+                                        row.status,
+                                        RowStatus::Accepted | RowStatus::Refused(_)
+                                    );
+                                    ui.add_enabled_ui(enabled, |ui| {
+                                        if let Some(v) =
+                                            editor(ui, row.index, &e.value, row.value, e.unit, int_edits)
+                                        {
+                                            edits.push((row.index, v));
+                                        }
+                                    });
+                                    match &row.status {
+                                        RowStatus::Accepted => ui.label(""),
+                                        RowStatus::Refused(why) => {
+                                            ui.colored_label(egui::Color32::LIGHT_RED, why)
+                                        }
+                                        RowStatus::NotOnOnePass => ui.weak(text::NOT_ON_ONE_PASS),
+                                        RowStatus::ReadOnly => ui.weak(text::HOST_RATE_READ_ONLY),
+                                    };
+                                    ui.end_row();
                                 }
                             });
-                            match &row.status {
-                                RowStatus::Accepted => ui.label(""),
-                                RowStatus::Refused(why) => ui.colored_label(egui::Color32::LIGHT_RED, why),
-                                RowStatus::NotOnOnePass => ui.weak(text::NOT_ON_ONE_PASS),
-                                RowStatus::ReadOnly => ui.weak(text::HOST_RATE_READ_ONLY),
-                            };
-                            ui.end_row();
-                        }
                     });
-                });
             }
         });
         for (i, v) in edits {
@@ -438,11 +449,11 @@ impl Workbench {
         }
     }
 
-    fn session(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn session_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         for m in &self.messages {
             ui.label(m);
         }
-        let Some(inp) = &self.input else {
+        let Some(inp) = self.session.input() else {
             ui.heading("Open a WAV, AIFF or FLAC file at one of the engine's rates.");
             ui.label(text::supported_rates());
             return;
@@ -466,13 +477,14 @@ impl Workbench {
                 egui::Color32::LIGHT_RED,
                 format!("Original: {}", text::PEAK_WARNING),
             );
+            ui.weak(text::headroom_hint(input_peak));
         }
         ui.separator();
-        // Render.
-        let renderable = self.panel.as_ref().is_some_and(Panel::renderable);
+        let renderable = self.session.panel().is_some_and(Panel::renderable);
         let mut start = false;
+        let mut tail = self.session.tail();
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.tail, "Tail")
+            ui.checkbox(&mut tail, "Tail")
                 .on_hover_text(text::TAIL_LABEL);
             if let Some(job) = &self.job {
                 let done = job.progress.load(Ordering::Relaxed);
@@ -489,18 +501,18 @@ impl Workbench {
                 start = true;
             }
         });
+        self.session.set_tail(tail);
         if start {
             self.start_render(ctx);
         }
-        let current = self.request();
-        let Some(r) = &self.render else {
+        let stale = self.session.is_stale();
+        let Some(r) = self.session.render() else {
             ui.label("No render yet.");
             return;
         };
-        if current.as_ref().is_some_and(|c| r.is_stale(c)) {
+        if stale {
             ui.colored_label(egui::Color32::YELLOW, text::STALE);
         }
-        // Readings (FR-009).
         egui::Grid::new("readings").num_columns(2).show(ui, |ui| {
             ui.label("Length");
             ui.label(secs(r.samples.len() as u64, rate));
@@ -542,12 +554,13 @@ impl Workbench {
         });
         if r.peak > 1.0 {
             ui.colored_label(egui::Color32::LIGHT_RED, text::PEAK_WARNING);
+            ui.weak(text::headroom_hint(r.peak));
         }
         ui.separator();
-        // Transport (D6).
         let mut play: Option<Take> = None;
         let mut switch = false;
         let mut stop = false;
+        let mut export = false;
         let (take, pos) = self.shared.cursor();
         ui.horizontal(|ui| {
             if ui.button("Play original").clicked() {
@@ -586,17 +599,12 @@ impl Workbench {
                 secs(pos, rate)
             ));
         }
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Slider::new(&mut self.monitor_volume, 0.0..=1.0)
-                        .text(text::MONITOR_VOLUME),
-                )
-                .changed()
-            {
-                self.shared.set_volume(self.monitor_volume);
-            }
-        });
+        if ui
+            .add(egui::Slider::new(&mut self.monitor_volume, 0.0..=1.0).text(text::MONITOR_VOLUME))
+            .changed()
+        {
+            self.shared.set_volume(self.monitor_volume);
+        }
         if let Some(p) = &self.playback {
             if p.device_rate().is_some_and(|d| d != f64::from(rate)) {
                 ui.weak(text::DEVICE_RATE_NOTE);
@@ -611,7 +619,7 @@ impl Workbench {
             ui.weak(text::PLAYBACK_UNAVAILABLE);
         }
         if ui.button("Export render…").clicked() {
-            self.export();
+            export = true;
         }
         if let Some(t) = play {
             self.play(t);
@@ -621,6 +629,9 @@ impl Workbench {
         }
         if stop {
             self.stop_playback();
+        }
+        if export {
+            self.export();
         }
     }
 }

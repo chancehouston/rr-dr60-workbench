@@ -32,6 +32,18 @@
 - D7's tail check: the bound after the tail is −100 dBFS with the speech coder off (it reads about −320 dBFS). With the coder on, the bound is the coder's own output on digital silence, because its idle output is quiet but not zero. It reads about 1e-4 after the tail, against about 1.1e-3 on silence.
 - FR-016's check runs the denylist over every string literal in the workbench's sources and over `text::all()`, rather than banning literals outside `text`.
 
+### Session 2026-11-02 (post-implementation reviews; decided under the owner's autopilot rule)
+
+- FR-007's order of engine values: **manifest order**. The route, volume and battery come before the slot (31) and its parameters (32 – 35), because on a fresh engine these controls are independent, and the engine keeps the parameter store across a slot change. A panel-free oracle with non-default values pins it.
+- **A render belongs to its input.** Opening another file cancels a running render, and a finished render of another file is discarded. The same file with another channel keeps the render, marked stale.
+- **Exporting a stale render is allowed.** It is written from the render's own request (its input, channel and values), with a note on screen. The sidecar is written from the render alone.
+- **A sidecar's channel is restored first**, and only then are the digests compared.
+- **The sidecar records the tail switch** (`tail on|off`), not just its length. At the taps before the gate the length is 0 with the switch on.
+- **A restore sets every value, then checks once.** Values the engine still refuses go back to their defaults and are listed. The report says whether the panel is renderable.
+- **A refusal the engine attaches to no control** is shown at the panel's top, not on an unrelated row.
+- **The A/B switch carries the position it was mapped from.** The callback adds the samples played since then, so the switch neither repeats nor skips a buffer. "Play original" and "Play render" during playback go through the same map.
+- The peak warning gains a headroom hint: a monitor volume of at most 1/peak. The workbench never scales automatically.
+
 ## Decisions for sign-off
 
 Read this section first. Each row gives the recommendation, and the Assumptions section lists the alternatives. Rows marked † were changed or added by the draft reviews.

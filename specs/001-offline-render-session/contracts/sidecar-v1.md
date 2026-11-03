@@ -14,6 +14,7 @@ engine.commit a06318ca1c7ded42f46d83c34716cdfad8a59446
 conversion 1
 recording_counter 0
 block 4096
+tail on                        # the switch: on or off
 tail_samples 6128
 channel 1                      # 1-based; or: channel mix
 input.file voice.wav           # the rest of the line, verbatim
@@ -53,6 +54,9 @@ every path (`set_settings_value` and the live path store it as 0.0; engine `cont
 The component slot's line is applied before its parameters' lines, whatever the file's order.
 
 ## Rules
+
+- `tail` is `on` or `off`. Any other value is malformed. It restores the switch, not the length; the length is 0 at the taps before the gate even with the switch on.
+- The `input.*` lines come from the render's own request, so a stale render's sidecar names the input it was made from.
 
 - First line other than `rr-dr60-workbench sidecar 1` → refused: "not a sidecar" or "sidecar
   version N is not supported".

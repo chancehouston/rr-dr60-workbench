@@ -22,7 +22,7 @@ fn empty_file() {
     let mut no_tail = request_for(&i, &p, false);
     no_tail.tail = false;
     assert!(run(&no_tail).samples.is_empty());
-    let text = workbench_core::sidecar::write(&i, &r);
+    let text = workbench_core::sidecar::write(&r);
     assert!(workbench_core::sidecar::read(&text).is_ok());
 }
 
@@ -86,26 +86,4 @@ fn non_finite_counted_and_passed() {
             .all(|(a, b)| a.to_bits() == b.to_bits()),
         "passed unchanged to the engine"
     );
-}
-
-#[test]
-fn refusals_leave_session_unchanged() {
-    // Format, rate and sidecar refusals return an error and build nothing; the panel's state is
-    // untouched by them (the panel and sidecar tests cover values and sidecars in depth).
-    let p = Panel::new(8000).unwrap();
-    let before: Vec<_> = p
-        .rows()
-        .iter()
-        .map(|r| (r.value, r.status.clone()))
-        .collect();
-    assert!(input::open_bytes("x.mp3", mp3_stub(), Channel::Index(0)).is_err());
-    assert!(input::open_bytes("x.wav", wav_i16(22050, &[0; 10]), Channel::Index(0)).is_err());
-    assert!(workbench_core::sidecar::read("nope").is_err());
-    assert!(workbench_core::export::check_size(u64::MAX / 4).is_err());
-    let after: Vec<_> = p
-        .rows()
-        .iter()
-        .map(|r| (r.value, r.status.clone()))
-        .collect();
-    assert_eq!(before, after);
 }

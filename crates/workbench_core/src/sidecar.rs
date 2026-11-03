@@ -17,13 +17,14 @@ pub const VERSION: u32 = 1;
 /// The conversion rule's version (research R-02).
 pub const CONVERSION: u32 = 1;
 
-const REQUIRED: [&str; 21] = [
+const REQUIRED: [&str; 22] = [
     "workbench.version",
     "engine.version",
     "engine.commit",
     "conversion",
     "recording_counter",
     "block",
+    "tail",
     "tail_samples",
     "channel",
     "input.file",
@@ -95,8 +96,10 @@ pub struct RestoreReport {
     pub rate_differs: Option<String>,
     /// The channel the sidecar used.
     pub channel: Option<Channel>,
-    /// Whether the sidecar's render had a tail.
+    /// Whether the sidecar's render had the tail switch on.
     pub tail: bool,
+    /// Whether the panel is renderable after the restore.
+    pub renderable: bool,
 }
 
 /// A continuous value: shortest round-trip decimal and its bits.
@@ -158,7 +161,7 @@ fn parse_reading(v: &str, ty: &ControlValue) -> Result<ControlReading, String> {
 /// Writes the sidecar of a render (D8). Every manifest control is written as the engine reads it
 /// back: settings fields from the render's settings, the others from a fresh engine with the
 /// render's values applied.
-pub fn write(input: &Input, render: &Render) -> String {
+pub fn write(render: &Render) -> String {
     let req = &render.request;
     let engine = render::fresh_engine(req).ok();
     let mut s = String::new();
@@ -172,16 +175,17 @@ pub fn write(input: &Input, render: &Render) -> String {
     kv("conversion", &CONVERSION.to_string());
     kv("recording_counter", "0");
     kv("block", &req.block.to_string());
+    kv("tail", if req.tail { "on" } else { "off" });
     kv("tail_samples", &render.tail_samples.to_string());
     let ch = match req.channel {
         Channel::Index(i) => (u32::from(i) + 1).to_string(),
         Channel::Mix => "mix".to_owned(),
     };
     kv("channel", &ch);
-    kv("input.file", &input.file_name.replace('\n', " "));
-    kv("input.frames", &input.frames.to_string());
-    kv("input.raw_sha256", &hex(&input.raw_sha256));
-    kv("input.sha256", &hex(&input.input_sha256));
+    kv("input.file", &req.file_name.replace('\n', " "));
+    kv("input.frames", &req.frames.to_string());
+    kv("input.raw_sha256", &hex(&req.raw_sha256));
+    kv("input.sha256", &hex(&req.input_sha256));
     kv("render.frames", &render.samples.len().to_string());
     kv(
         "render.latency_samples",
@@ -274,6 +278,12 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
         if key == "render.peak" {
             parse_f32(value).map_err(|e| SidecarError::Malformed(n, e))?;
         }
+        if key == "tail" && value != "on" && value != "off" {
+            return Err(SidecarError::Malformed(
+                n,
+                format!("tail is `on` or `off`, got `{value}`"),
+            ));
+        }
         if key == "conversion" && value != CONVERSION.to_string() {
             return Err(SidecarError::Malformed(
                 n,
@@ -301,7 +311,7 @@ pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
     }
     rep.input_differs =
         s.fields.get("input.sha256").map(String::as_str) != Some(hex(&input.input_sha256).as_str());
-    rep.tail = s.fields.get("tail_samples").is_some_and(|t| t != "0");
+    rep.tail = s.fields.get("tail").is_some_and(|t| t == "on");
     rep.channel = s.fields.get("channel").and_then(|c| {
         if c == "mix" {
             Some(Channel::Mix)
@@ -323,6 +333,9 @@ pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
         }
     }
     ordered.sort_by_key(|(i, _, _)| *i);
+    // Parse and filter first; then set every value and check once (hardware review B6), so a
+    // value valid only together with another is not refused against a partial state.
+    let mut batch: Vec<(u32, ControlReading, String)> = Vec::new();
     for (i, id, v) in ordered {
         seen.push(i);
         let row = panel.rows()[i as usize].clone();
@@ -356,15 +369,37 @@ pub fn restore(s: &Sidecar, panel: &mut Panel, input: &Input) -> RestoreReport {
                 .push((id.to_owned(), format!("{c} is not one of the options")));
             continue;
         }
-        let before = row.value;
-        panel.set(i, reading);
-        if let RowStatus::Refused(why) = &panel.rows()[i as usize].status {
-            rep.refused.push((id.to_owned(), why.clone()));
-            panel.set(i, before);
-        } else {
-            rep.applied += 1;
-        }
+        batch.push((i, reading, id.to_owned()));
     }
+    let values: Vec<(u32, ControlReading)> = batch.iter().map(|(i, r, _)| (*i, *r)).collect();
+    panel.set_many(&values);
+    // Values the engine refused, row by row: reported and returned to their defaults, then
+    // checked again; repeated until the panel holds only accepted values.
+    loop {
+        let refused: Vec<(u32, String)> = batch
+            .iter()
+            .filter_map(|(i, _, _)| match &panel.rows()[*i as usize].status {
+                RowStatus::Refused(why) => Some((*i, why.clone())),
+                _ => None,
+            })
+            .collect();
+        if refused.is_empty() {
+            break;
+        }
+        let defaults = Panel::new(panel.rate_hz()).ok();
+        let mut back = Vec::new();
+        for (i, why) in refused {
+            let (_, _, id) = batch.iter().find(|(j, _, _)| *j == i).cloned().unwrap();
+            rep.refused.push((id, why));
+            batch.retain(|(j, _, _)| *j != i);
+            if let Some(d) = &defaults {
+                back.push((i, d.rows()[i as usize].value));
+            }
+        }
+        panel.set_many(&back);
+    }
+    rep.applied += batch.len();
+    rep.renderable = panel.renderable();
     for r in panel.rows() {
         if !seen.contains(&r.index) && r.class != ControlClass::Unknown {
             rep.missing_controls.push(r.entry.identifier.to_owned());

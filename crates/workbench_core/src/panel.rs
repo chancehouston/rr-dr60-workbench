@@ -52,6 +52,7 @@ pub struct Panel {
     rate_hz: u32,
     rows: Vec<ControlRow>,
     check: Pipeline,
+    general: Option<String>,
 }
 
 impl std::fmt::Debug for Panel {
@@ -61,6 +62,22 @@ impl std::fmt::Debug for Panel {
             .field("rows", &self.rows.len())
             .finish_non_exhaustive()
     }
+}
+
+/// A stage group's title from the engine's stage manifest: "Stage 11 · <name>" (coach 10), or
+/// "No stage" for 0.
+pub fn stage_title(stage: u8) -> String {
+    if stage == 0 {
+        return "No stage".to_owned();
+    }
+    rr_dr60::manifest()
+        .stages()
+        .iter()
+        .find(|e| e.number == stage)
+        .map_or_else(
+            || format!("Stage {stage}"),
+            |e| format!("Stage {stage} · {}", e.name),
+        )
 }
 
 /// An entry's default as a reading (the host rate's default is the session's rate).
@@ -127,6 +144,7 @@ impl Panel {
             rate_hz,
             rows,
             check,
+            general: None,
         };
         p.recheck();
         Ok(p)
@@ -166,6 +184,24 @@ impl Panel {
         true
     }
 
+    /// Sets several values, then checks once (a sidecar restore; hardware review B6). Read-only
+    /// and not-on-the-one-pass rows are skipped.
+    pub fn set_many(&mut self, values: &[(u32, ControlReading)]) {
+        for &(index, value) in values {
+            if let Some(row) = self.rows.get_mut(index as usize)
+                && !matches!(row.status, RowStatus::ReadOnly | RowStatus::NotOnOnePass)
+            {
+                row.value = value;
+            }
+        }
+        self.recheck();
+    }
+
+    /// A refusal the engine attaches to no control, shown at the panel's top (coach 12).
+    pub fn general_refusal(&self) -> Option<&str> {
+        self.general.as_deref()
+    }
+
     /// Restores every control to its default (US2 AS7).
     pub fn reset_to_defaults(&mut self) {
         let defaults = Settings::new(self.rate_hz);
@@ -184,12 +220,13 @@ impl Panel {
         self.recheck();
     }
 
-    /// True when no row is refused (FR-006).
+    /// True when no row is refused and no panel-level refusal stands (FR-006).
     pub fn renderable(&self) -> bool {
-        !self
-            .rows
-            .iter()
-            .any(|r| matches!(r.status, RowStatus::Refused(_)))
+        self.general.is_none()
+            && !self
+                .rows
+                .iter()
+                .any(|r| matches!(r.status, RowStatus::Refused(_)))
     }
 
     /// The settings and the engine values, in manifest order, for a render request.
@@ -223,6 +260,7 @@ impl Panel {
     /// Re-checks every row in research R-08's order and sets each status.
     fn recheck(&mut self) {
         let defaults = Settings::new(self.rate_hz);
+        self.general = None;
         for r in &mut self.rows {
             if matches!(r.status, RowStatus::Refused(_)) {
                 r.status = RowStatus::Accepted;
@@ -287,15 +325,7 @@ impl Panel {
             _ => Vec::new(),
         };
         if targets.is_empty() {
-            // A refusal the engine does not attach to a field: shown on the first settings row
-            // the user can edit, so Render stays unavailable and the message is visible.
-            if let Some(r) = self
-                .rows
-                .iter_mut()
-                .find(|r| r.status == RowStatus::Accepted)
-            {
-                r.status = RowStatus::Refused(msg);
-            }
+            self.general = Some(msg);
             return;
         }
         for t in targets {

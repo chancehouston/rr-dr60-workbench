@@ -44,6 +44,10 @@ pub struct Shared {
     pub cursor: AtomicU64,
     /// A cursor the UI asks for; swapped in at the top of the next buffer.
     pub request: AtomicU64,
+    /// The old take's position the request was mapped from: the callback adds the samples
+    /// played since then, so a callback between the UI's read and the swap neither repeats nor
+    /// skips (hardware review B2).
+    pub request_base: AtomicU64,
     /// The monitor volume's f32 bits (playback only, never exported).
     pub volume_bits: AtomicU32,
     /// Whether samples are played (otherwise zeros, the cursor held).
@@ -57,6 +61,7 @@ impl Default for Shared {
         Self {
             cursor: AtomicU64::new(pack(Take::Original, 0)),
             request: AtomicU64::new(NO_REQUEST),
+            request_base: AtomicU64::new(NO_REQUEST),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
             playing: AtomicBool::new(false),
             overloads: AtomicU64::new(0),
@@ -65,9 +70,17 @@ impl Default for Shared {
 }
 
 impl Shared {
-    /// Asks the callback to move to `take` at `position` from its next buffer.
+    /// Asks the callback to move to `take` at `position` from its next buffer (a jump: no base).
     pub fn request(&self, take: Take, position: u64) {
+        self.request_base.store(NO_REQUEST, Ordering::Relaxed);
         self.request.store(pack(take, position), Ordering::Release);
+    }
+
+    /// Asks for `take` at `mapped`, mapped from the old take's position `base`: the callback
+    /// starts at `mapped + (now − base)`, the samples played since the UI read the cursor.
+    pub fn request_from(&self, take: Take, mapped: u64, base: u64) {
+        self.request_base.store(base, Ordering::Relaxed);
+        self.request.store(pack(take, mapped), Ordering::Release);
     }
 
     /// The current take and position.
@@ -98,7 +111,14 @@ pub fn fill(takes: &Takes, shared: &Shared, left: &mut [f32], right: &mut [f32])
     let req = shared.request.swap(NO_REQUEST, Ordering::AcqRel);
     let mut word = shared.cursor.load(Ordering::Relaxed);
     if req != NO_REQUEST {
-        word = req;
+        let base = shared.request_base.load(Ordering::Relaxed);
+        let (_, now) = unpack(word);
+        let (t, mapped) = unpack(req);
+        word = if base == NO_REQUEST {
+            req
+        } else {
+            pack(t, mapped + now.saturating_sub(base))
+        };
     }
     let (take, mut pos) = unpack(word);
     if !shared.playing.load(Ordering::Relaxed) {
