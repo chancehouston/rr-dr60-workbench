@@ -207,9 +207,7 @@ fn record_written_as_engine() {
                 direct_record(rate, cell, &input.samples),
                 "{rate} {cell:?}"
             );
-            let mut r = RecordReadout::default();
-            d.read_record(&f.record).unwrap();
-            record::read(&f.record, &mut r).unwrap();
+            let r = d.read_record(&f.record).unwrap();
             assert_eq!(r.flags, 0, "{rate} {cell:?}: flags");
         }
     }
@@ -267,15 +265,25 @@ fn re_render_detects_deltas() {
         });
         differs(plain, "counter", &|r| r.counter += 1);
         differs(plain, "knee", &|r| r.settings.agc.knee_dbfs = -30.0);
-        // The threshold: voice, then a 1 kHz tone of amplitude 0.006 (−44.4 dBFS), which the gate
-        // reads between the record's −40 dBFS threshold and the delta's −43 through the
-        // microphone stages (a probe at 6 kHz: 0.004 pauses at both, 0.0084 at neither), so it
-        // pauses on it only without the delta.
+        // The threshold: voice, then a 1 kHz tone of amplitude 0.00708 (−43.0 dBFS), in the middle
+        // of the window where the gate pauses under the record's −40 dBFS threshold and not under
+        // the delta's −43 at every rate (post-implementation review B2: the edges run −40.73 …
+        // −41.55 and −44.44 … −45.31 dBFS by rate). The cause is asserted first: two recordings,
+        // the delta's longer.
         {
             let mut x = voiced(rate, 0.3, 0.5);
-            x.extend(tone(rate, 1.6, 0.006));
+            x.extend(tone(rate, 1.6, 0.00708));
             let input = input_of(rate, &x);
             let (d, n) = recorded(rate, plain, &input, 0);
+            let mut lower = settings(rate, plain);
+            lower.vas.threshold_dbfs -= 3.0;
+            let mut d2 = Device::new(lower).unwrap();
+            d2.record(&input.samples, 0, None, &[]).unwrap();
+            let (l1, l2) = (d.items()[0].length, d2.items()[0].length);
+            assert!(
+                l1 < l2,
+                "{rate} threshold: pauses only at −40 dBFS ({l1} vs {l2})"
+            );
             let f = save(&d, n, &input);
             let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
             let mut recipe = prep.recipe.clone();
@@ -357,7 +365,7 @@ fn live_value_twins_reproduce() {
         mute: false,
         self_stop: false,
     };
-    for rate in [6000, 48_000] {
+    for rate in RATES {
         let input = input_of(rate, &stimulus(rate, plain));
         for (id, v) in [
             (
@@ -562,6 +570,35 @@ fn re_render_from_offset() {
         let ri = records::read_record_input(&f.input_text).unwrap();
         assert_eq!(ri.start, Some(start as u64));
         assert!(re_render(&f, &input).unwrap().reproduces(), "{rate}");
+        // The .i24 span is the fed span from the start (review B5), and it re-renders alone, fed
+        // from 0 as the engine's own recipes feed it.
+        assert_eq!(ri.feed_point, FeedPoint::I24);
+        let i24: Vec<i32> = f
+            .i24
+            .as_ref()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| i32::from_le_bytes(*c))
+            .collect();
+        let mut back = vec![0.0f32; i24.len()];
+        rr_dr60::input::samples_from_i24(&i24, &mut back);
+        let fed = ri.fed.unwrap() as usize;
+        assert!(
+            back.iter()
+                .zip(&input.samples[start..start + fed])
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+                && back.len() == fed,
+            "{rate}"
+        );
+        let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
+        assert!(
+            run_recipe(&prep.recipe, prep.readout.recording_digest, &back)
+                .unwrap()
+                .reproduces(),
+            "{rate}: from the .i24 span"
+        );
     }
 }
 
@@ -594,22 +631,29 @@ fn re_render_refills_schedule() {
     assert!(re_render(&f, &input).unwrap().reproduces());
 }
 
-#[test]
-fn re_render_unknown_component_and_cancel() {
-    let rate = 6000;
-    let cell = Cell {
+fn plain_cell() -> Cell {
+    Cell {
         codec: false,
         changes: false,
         mute: false,
         self_stop: false,
-    };
-    let (f, input, recipe, expected) = base(rate, cell);
+    }
+}
+
+#[test]
+fn re_render_unknown_component() {
+    let (f, _, _, _) = base(6000, plain_cell());
     let mut r = readout(&f.record);
     r.flags |= flags::UNKNOWN_COMPONENT;
     assert_eq!(
         Recipe::of(&f.record, &r).unwrap_err(),
         ReRenderError::UnknownComponent
     );
+}
+
+#[test]
+fn re_render_cancel() {
+    let (_, input, recipe, expected) = base(6000, plain_cell());
     let e = records::re_render(
         &recipe,
         expected,
@@ -619,6 +663,116 @@ fn re_render_unknown_component_and_cancel() {
     )
     .unwrap_err();
     assert_eq!(e, ReRenderError::Cancelled);
+}
+
+#[test]
+fn flags_label_expected() {
+    assert_eq!(records::expected_note(0), None);
+    for (bit, name) in records::FLAG_NAMES {
+        let note = records::expected_note(bit);
+        if records::EXPECTED_DIFFER & bit != 0 {
+            assert_eq!(note, Some(format!("expected under {name}")));
+        } else {
+            assert_eq!(note, None, "{name}");
+        }
+    }
+    assert_eq!(
+        records::expected_note(flags::HOST_RATE_DIFFERS | flags::LIBRARY_DIFFERS).unwrap(),
+        "expected under LIBRARY_DIFFERS, HOST_RATE_DIFFERS"
+    );
+}
+
+/// Review B1: a record with the band filter in the slot reproduces; the harness's two slot
+/// deltas differ; the settings diff shows the slot's rows.
+#[test]
+fn slot_restored() {
+    use rr_dr60::components::ComponentId;
+    use rr_dr60::control_map::ControlReading as R;
+    let cell = plain_cell();
+    for rate in RATES {
+        let input = input_of(rate, &stimulus(rate, cell));
+        let mut d = Device::new(settings(rate, cell)).unwrap();
+        let slot = [
+            ("band_filter.frequency_hz", R::Continuous(500.0)),
+            ("band_filter.q", R::Continuous(2.0)),
+            ("band_filter.type", R::Choice(1)),
+            (
+                "insert.before_limiter",
+                R::Choice(ComponentId::BandFilter as u32),
+            ),
+        ];
+        for (id, v) in slot {
+            d.set_value(idx(id), v).unwrap();
+        }
+        d.record_from(&input.samples, RunSource::of(&input, 0), 0, None, &[])
+            .unwrap();
+        let f = save(&d, 1, &input);
+        let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
+        let expected = prep.readout.recording_digest;
+        assert_eq!(prep.recipe.component, ComponentId::BandFilter, "{rate}");
+        assert!(
+            run_recipe(&prep.recipe, expected, &input.samples)
+                .unwrap()
+                .reproduces(),
+            "{rate}: the slot restored"
+        );
+        let mut none = prep.recipe.clone();
+        none.component = ComponentId::None;
+        assert!(
+            !run_recipe(&none, expected, &input.samples)
+                .unwrap()
+                .reproduces(),
+            "{rate}: no component"
+        );
+        let mut moved = prep.recipe.clone();
+        moved.store[1] = (moved.store[1] * 1.5).min(20_000.0);
+        assert!(
+            !run_recipe(&moved, expected, &input.samples)
+                .unwrap()
+                .reproduces(),
+            "{rate}: the frequency moved"
+        );
+        if rate == 48_000 {
+            let mut panel = workbench_core::panel::Panel::new(rate).unwrap();
+            set_num(&mut panel, "memory.capacity_s", 2.0);
+            set_switch(&mut panel, "speech_codec_enabled", false);
+            let vals = |p: &workbench_core::panel::Panel| -> Vec<_> {
+                p.rows().iter().map(|r| (r.index, r.value)).collect()
+            };
+            let ids: Vec<_> = records::settings_diff(&prep.readout, &vals(&panel))
+                .unwrap()
+                .unwrap()
+                .iter()
+                .map(|r| r.identifier)
+                .collect();
+            for (id, _) in slot {
+                assert!(ids.contains(&id), "{id} in {ids:?}");
+            }
+            panel.set_many(&slot.iter().map(|(id, v)| (idx(id), *v)).collect::<Vec<_>>());
+            assert!(
+                records::settings_diff(&prep.readout, &vals(&panel))
+                    .unwrap()
+                    .unwrap()
+                    .is_empty(),
+                "the panel matches"
+            );
+            let mut unknown = prep.readout;
+            unknown.flags |= flags::UNKNOWN_COMPONENT;
+            let rows = records::settings_diff(&unknown, &vals(&plain_panel(rate)))
+                .unwrap()
+                .unwrap();
+            assert!(rows.iter().all(|r| !r.identifier.starts_with("band_filter")
+                && r.identifier != "insert.before_limiter"));
+        }
+    }
+}
+
+/// The panel of a plain cell.
+fn plain_panel(rate: u32) -> workbench_core::panel::Panel {
+    let mut p = workbench_core::panel::Panel::new(rate).unwrap();
+    set_num(&mut p, "memory.capacity_s", 2.0);
+    set_switch(&mut p, "speech_codec_enabled", false);
+    p
 }
 
 #[test]
@@ -749,14 +903,26 @@ fn record_refusals() {
     let at = text.find("seed = ").unwrap() + 7;
     let mut b = f.record.clone();
     b[at] = if b[at] == b'1' { b'2' } else { b'1' };
-    assert!(d.read_record(&b).is_err());
+    assert_eq!(
+        d.read_record(&b).unwrap_err(),
+        rr_dr60::Error::RecordChecksumMismatch
+    );
     // A missing line.
     let cut: String = text
         .lines()
         .filter(|l| !l.starts_with("seed "))
         .map(|l| format!("{l}\n"))
         .collect();
-    assert!(d.read_record(cut.as_bytes()).is_err());
+    let e = d.read_record(cut.as_bytes()).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            rr_dr60::Error::RecordChecksumMismatch
+                | rr_dr60::Error::MissingRecordField { .. }
+                | rr_dr60::Error::MalformedRecord { .. }
+        ),
+        "{e:?}"
+    );
     // An unknown version.
     let v = text.replacen(
         &format!("{} = 2", record::VERSION_LINE_NAME),
@@ -765,7 +931,10 @@ fn record_refusals() {
     );
     assert_ne!(v, text);
     let e = d.read_record(v.as_bytes()).unwrap_err();
-    assert!(!e.to_string().is_empty());
+    assert!(
+        matches!(e, rr_dr60::Error::UnknownRecordVersion { .. }),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -831,10 +1000,19 @@ fn record_input_roundtrip_and_refusals() {
     assert!(records::read_record_input(&v2).is_err());
 }
 
-/// Plan review Q3: a hang change scheduled late raises the stop's report bound; the buffers are
-/// sized when they are used, so the recording is kept and re-renders.
+/// Plan review Q3: a pending hang change raises the report bound (asserted on a check engine),
+/// which is why the device sizes its buffers when it uses them; a recording with a late hang
+/// change is kept and re-renders. With 10 ms calls the bound is never exceeded in practice, so
+/// the device's over-buffer paths are guards no test reaches (review B3).
 #[test]
 fn late_hang_change_keeps_recording() {
+    for rate in [6000, 48_000] {
+        let mut p = Pipeline::new(settings(rate, plain_cell())).unwrap();
+        let before = p.max_record_events(rate as usize);
+        p.schedule_change(Stream::Record, 0, idx("vas.hang_ms"), 50.0, 1)
+            .unwrap();
+        assert!(p.max_record_events(rate as usize) > before, "{rate}");
+    }
     let cell = Cell {
         codec: true,
         changes: false,
@@ -872,11 +1050,21 @@ fn companion_paths_beside_the_record() {
     assert_eq!(t, std::path::Path::new("/a/other.record-input.txt"));
 }
 
+/// C8: a record's −0.0 equals the panel's 0.0 in the settings diff.
 #[test]
 fn negative_zero_equals_zero() {
-    use rr_dr60::control_map::ControlReading;
-    assert_eq!(
-        ControlReading::Continuous(-0.0),
-        ControlReading::Continuous(0.0)
+    let (f, _, _, _) = base(6000, plain_cell());
+    let mut r = readout(&f.record);
+    r.settings.mic.hiss_offset_db = -0.0;
+    let mut panel = workbench_core::panel::Panel::new(6000).unwrap();
+    set_num(&mut panel, "memory.capacity_s", 2.0);
+    set_switch(&mut panel, "speech_codec_enabled", false);
+    set_num(&mut panel, "mic.hiss_offset_db", 0.0);
+    let vals: Vec<_> = panel.rows().iter().map(|r| (r.index, r.value)).collect();
+    assert!(
+        records::settings_diff(&r, &vals)
+            .unwrap()
+            .unwrap()
+            .is_empty()
     );
 }

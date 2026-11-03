@@ -16,6 +16,13 @@
 - **The recipe is ported** (C5, B3). The engine's re-render recipe and its filler exist only in the engine's unpublished harness and in its Swift package. The workbench mirrors them (Swift's `ReRender.reRender` and `fill`), and an engine issue asks for a public re-render (constitution I).
 - **"Differs" is tested in the core** (C1, B2). An edited record fails its checksum and is refused, so the deltas are applied to the read-out in the core, as the engine's harness does.
 
+### Session 2026-11-03 (post-implementation reviews: dated restatements)
+
+- **US1 AS3, the threshold delta**: it uses its own stimulus, voice then a 1 kHz tone at −43.0 dBFS, the middle of the window where the gate pauses under −40 dBFS and not under −43 at every rate (hardware review B2), and asserts that cause by two recordings before it asserts the digest. The cell's voice alone never pauses at the default hang.
+- **US1 AS3, the twins**: the live-value twins (volume, route, speed, battery) are `live_value_twins_reproduce`, at seven rates; the output clamp twin stays in `re_render_detects_deltas`.
+- **D4, the expected label**: the pure reader cannot set `HOST_RATE_DIFFERS`, so the window takes the flags from the device reader's read-out and the prepared one together. In the window the rate flag cannot arise at a re-render, because the input's SHA-256 ties the record to the open file, whose rate is the device's (plan review Q4).
+- **D4, the slot**: the parameters are restored at each component's published offsets (`components::components()`), for every component, as the engine's harness restores the store (hardware review B4). The engine's Swift recipe restores them only when the component has parameters, which differs when the slot is empty and the store is not default (engine issue #77).
+
 ## Decisions (in force under autopilot)
 
 | # | Decision | In force |
@@ -38,7 +45,7 @@ A user records an item on the device with record-side changes, saves its process
 
 1. **Given** a recorded item, **When** its processing record is written, **Then** the bytes equal what a direct engine writes for the same input and calls, and the record reads back with no flag set (`record_written_as_engine`).
 2. **Given** a written record and the session's input, **When** it is re-rendered, **Then** the digest equals the item's in sixteen cells (codec on/off × changes or none × drop/mute × stop call/self-stop) at seven rates (`re_render_reproduces`).
-3. **Given** a record's read-out with one of the engine's effective deltas, **When** it is re-rendered, **Then** it differs. The deltas are: the seed +1; the counter +1; the knee to −30 dBFS; the threshold −3 dB; with the codec off, the hiss entry moved ⌈rate ÷ 6000⌉ host samples; with the codec on, the knee entry moved 0.1 s; the stop one frame earlier; in the self-stop cell, no fill. The twins (another volume, route, speed, battery, the output clamp toggled) still reproduce (`re_render_detects_deltas`).
+3. **Given** a record's read-out with one of the engine's effective deltas, **When** it is re-rendered, **Then** it differs. The deltas are: the seed +1; the counter +1; the knee to −30 dBFS; the threshold −3 dB; with the codec off, the hiss entry moved ⌈rate ÷ 6000⌉ host samples; with the codec on, the knee entry moved 0.1 s; the stop one frame earlier; in the self-stop cell, no fill. The twins (another volume, route, speed, battery, the output clamp toggled) still reproduce (`re_render_detects_deltas`, `live_value_twins_reproduce`, `slot_restored`).
 4. **Given** a session input that is not the record's (another SHA-256 or channel), or no record-input file, **When** a re-render is asked, **Then** it is refused in words, naming the record's input file (`re_render_refuses_other_input`).
 5. **Given** items erased and renumbered after a recording, **When** a later item's record is written, **Then** it carries that item's own run (`runs_follow_the_counter`).
 6. **Given** an imported item, **When** its record is written, **Then** it is the engine's imported-origin record, and its re-render is refused in words (`imported_item_record`).

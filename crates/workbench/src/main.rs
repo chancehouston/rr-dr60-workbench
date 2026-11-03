@@ -74,6 +74,8 @@ struct ReRenderJob {
     cancel: Arc<AtomicBool>,
     total: u64,
     rx: Receiver<Result<workbench_core::records::Outcome, String>>,
+    /// The note a "differs" carries under the record's flags (D4, C10).
+    note: Option<String>,
 }
 
 /// A live playback on a clone of the device (spec 004b).
@@ -1574,8 +1576,6 @@ impl Workbench {
         }
     }
 
-    /// The live playback's controls (spec 004b D2): each change is sent to the callback and
-    /// lands at the stream's current position.
     /// The processing record section (spec 005 D3, D4).
     fn records_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         use workbench_core::records;
@@ -1647,7 +1647,10 @@ impl Workbench {
                         r.stop.silence_fed_samples
                     ),
                 );
-                row("slot", format!("{:?} {:?}", r.component, &r.store[..4]));
+                row(
+                    "slot",
+                    format!("{:?}, parameters {:?}", r.component, r.store),
+                );
                 row("stage mask", format!("0x{:04x}", r.stage_mask));
                 let names = records::flag_names(r.flags);
                 row(
@@ -1664,15 +1667,39 @@ impl Workbench {
                 ui.label(format!("stage {} model {}", i + 1, ver(*v)));
             }
         }
+        egui::CollapsingHeader::new("Splices or muted regions in the record").show(ui, |ui| {
+            egui::Grid::new("record_rows").striped(true).show(ui, |ui| {
+                for h in ["#", "kept position", "input length", "host input position"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for i in 0..r.event_count.min(500) {
+                    if let Some(e) = rr_dr60::record::record_event(&rec.bytes, i) {
+                        ui.label(i.to_string());
+                        ui.monospace(e.event.output_position.to_string());
+                        ui.monospace(e.event.input_length.to_string());
+                        ui.monospace(e.host_input_position.to_string());
+                        ui.end_row();
+                    }
+                }
+            });
+            if r.event_count > 500 {
+                ui.label(format!("… the first 500 of {}", r.event_count));
+            }
+        });
         for name in records::unknown_settings(&rec.bytes, r) {
             ui.label(format!("Unknown setting in the record: {name}"));
         }
         egui::CollapsingHeader::new("Settings against the panel").show(ui, |ui| {
-            let panel: Vec<_> = self
-                .session
-                .panel()
-                .map(|p| p.rows().iter().map(|r| (r.index, r.value)).collect())
-                .unwrap_or_default();
+            let Some(panel) = self.session.panel().map(|p| {
+                p.rows()
+                    .iter()
+                    .map(|r| (r.index, r.value))
+                    .collect::<Vec<_>>()
+            }) else {
+                ui.label("No panel open: no diff");
+                return;
+            };
             match records::settings_diff(r, &panel) {
                 Ok(None) => {
                     ui.label("No settings in an imported record");
@@ -1706,7 +1733,13 @@ impl Workbench {
         ui.horizontal(|ui| {
             ui.label("item");
             ui.add(egui::DragValue::new(&mut self.check_item).range(1..=99));
-            if ui.button("Check against item").clicked()
+            if ui
+                .add_enabled(
+                    self.device.is_some(),
+                    egui::Button::new("Check against item"),
+                )
+                .on_disabled_hover_text("No device: build it in the Device tab first")
+                .clicked()
                 && let Some(dev) = &self.device
             {
                 match dev.check_record(self.check_item, &mut rec.readout) {
@@ -1788,15 +1821,12 @@ impl Workbench {
                 return;
             }
         };
-        let mut m = Vec::new();
-        let expected = prep.readout.flags & records::EXPECTED_DIFFER;
-        if expected != 0 {
-            m.push(format!(
-                "The record's flags {}: a differing result is expected",
-                records::flag_names(expected).join(", ")
-            ));
-        }
-        self.messages = m;
+        // The device reader's flags (it alone sets HOST_RATE_DIFFERS) with the pure reader's.
+        let note = records::expected_note(rec.readout.flags | prep.readout.flags);
+        self.messages = note
+            .iter()
+            .map(|n| format!("The record's flags: a difference is {n}"))
+            .collect();
         let progress = Arc::new(AtomicU64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
@@ -1816,6 +1846,7 @@ impl Workbench {
             cancel,
             total,
             rx,
+            note,
         });
     }
 
@@ -1824,14 +1855,15 @@ impl Workbench {
             return;
         };
         if let Ok(r) = job.rx.try_recv() {
+            let note = job.note.clone();
             self.rerender = None;
             self.messages.push(match r {
                 Ok(o) => format!(
                     "{}: record {:016x}, re-render {:016x}",
-                    if o.reproduces() {
-                        "Reproduces"
-                    } else {
-                        "Differs"
+                    match (o.reproduces(), note) {
+                        (true, _) => "Reproduces".to_owned(),
+                        (false, Some(n)) => format!("Differs ({n})"),
+                        (false, None) => "Differs".to_owned(),
                     },
                     o.expected,
                     o.digest
@@ -1841,6 +1873,8 @@ impl Workbench {
         }
     }
 
+    /// The live playback's controls (spec 004b D2): each change is sent to the callback and
+    /// lands at the stream's current position.
     fn live_play_view(&mut self, ui: &mut egui::Ui) {
         use rr_dr60::control_map::ControlReading;
         use rr_dr60::controls::{ControlValue, controls};
@@ -1914,8 +1948,6 @@ impl Workbench {
     }
 }
 
-/// Replays a playback sidecar against the stored form named in it, beside the sidecar (D5),
-/// and reports each check.
 /// Writes item `n`'s processing record and its companions beside `path` (spec 005 D2).
 fn save_record_files(
     dev: &workbench_core::device::Device,
@@ -1956,6 +1988,8 @@ fn save_record_files(
     }
 }
 
+/// Replays a playback sidecar against the stored form named in it, beside the sidecar (D5),
+/// and reports each check.
 fn replay_messages(path: &std::path::Path) -> Vec<String> {
     use workbench_core::device;
     let result = std::fs::read_to_string(path)

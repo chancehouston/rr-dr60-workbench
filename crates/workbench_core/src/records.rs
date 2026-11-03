@@ -568,8 +568,9 @@ pub fn filler(encoding: Encoding, samples: u64) -> Result<Vec<u8>, ReRenderError
     Ok(bytes)
 }
 
-/// Restores the slot (plan R-07 step 3): every parameter the engine accepts, by index until it
-/// answers `NoSuchComponent` (its own end of the parameter list), then the component.
+/// Restores the slot (plan R-07 step 3): every component's parameters at their published
+/// offsets (`components::components()`, `parameter_offset + i`; post-implementation review B4),
+/// whatever the component, as the engine's harness restores the store; then the component.
 ///
 /// # Errors
 ///
@@ -580,14 +581,22 @@ pub fn restore_slot(
     store: &[f32; components::COMPONENT_PARAMETER_BUDGET],
 ) -> Result<(), Error> {
     let point = InsertionPointId::BeforeLimiter;
-    for (i, v) in store.iter().enumerate() {
-        match p.set_component_parameter(point, i as u32, f64::from(*v)) {
-            Ok(()) => {}
-            Err(Error::NoSuchComponent { .. }) => break,
-            Err(e) => return Err(e),
+    for c in components::components() {
+        for k in 0..c.parameters.len() {
+            let at = c.parameter_offset as usize + k;
+            if let Some(v) = store.get(at) {
+                p.set_component_parameter(point, at as u32, f64::from(*v))?;
+            }
         }
     }
     p.set_component(point, component)
+}
+
+/// The note a re-render's result carries when the record's flags make a difference expected
+/// (D4, C10): `None` when no such flag is set.
+pub fn expected_note(flags: u32) -> Option<String> {
+    let names = flag_names(flags & EXPECTED_DIFFER);
+    (!names.is_empty()).then(|| format!("expected under {}", names.join(", ")))
 }
 
 /// Re-renders `recipe` from `fed`, the input from the record's start (D4), in 10 ms calls;
@@ -640,6 +649,9 @@ pub fn re_render(
     let end = usize::try_from(recipe.stop.stop_input_position)
         .unwrap_or(usize::MAX)
         .min(fed.len());
+    // The reports do not enter the digest, so this buffer is not regrown after a hang landing
+    // (as the engine's harness; review B6). The calls are 10 ms, as the recording's were, so
+    // 64 pending is always enough between two refills (review B4's note).
     let mut ev = vec![VasEvent::new(0, 0); p.max_record_events(block).max(1)];
     let mut pos = 0usize;
     let mut stopped = false;
