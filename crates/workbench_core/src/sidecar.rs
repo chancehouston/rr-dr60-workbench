@@ -12,8 +12,10 @@ use crate::render::{self, Render};
 
 /// The first line.
 pub const MAGIC: &str = "rr-dr60-workbench sidecar";
-/// The format version this build writes and reads.
-pub const VERSION: u32 = 1;
+/// The format version this build writes (spec 003 D5); it reads 1 and 2.
+pub const VERSION: u32 = 2;
+/// Version 2's keys.
+const V2_REQUIRED: [&str; 3] = ["live", "start", "fed"];
 /// The conversion rule's version (research R-02).
 pub const CONVERSION: u32 = 1;
 
@@ -71,10 +73,14 @@ impl std::error::Error for SidecarError {}
 /// A parsed sidecar.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sidecar {
+    /// The version read (1 or 2).
+    pub version: u32,
     /// The header fields.
     pub fields: BTreeMap<String, String>,
     /// The control lines in file order: identifier and raw value.
     pub controls: Vec<(String, String)>,
+    /// The change lines in file order (version 2): clock, position, identifier, value, tag.
+    pub changes: Vec<(rr_dr60::changes::Clock, u64, String, f64, u64)>,
 }
 
 /// What a restore did (D9).
@@ -114,6 +120,36 @@ fn fmt_reading(r: ControlReading) -> String {
         ControlReading::Continuous(f) => fmt_f32(f),
         ControlReading::Choice(c) => c.to_string(),
     }
+}
+
+/// Parses a change line's value: `<in|out> <position> <identifier> <decimal> 0x<f64 bits> <tag>`
+/// (spec 003 D5): the bits rule, the decimal must agree, and the tag is at least 1.
+fn parse_change(v: &str) -> Result<(rr_dr60::changes::Clock, u64, String, f64, u64), String> {
+    let f: Vec<&str> = v.split(' ').collect();
+    let [clock, pos, id, dec, bits, tag] = f.as_slice() else {
+        return Err(format!("a change line has six fields, got `{v}`"));
+    };
+    let clock = match *clock {
+        "in" => rr_dr60::changes::Clock::Input,
+        "out" => rr_dr60::changes::Clock::Output,
+        c => return Err(format!("clock is `in` or `out`, got `{c}`")),
+    };
+    let pos: u64 = pos.parse().map_err(|_| format!("bad position `{pos}`"))?;
+    let b = bits
+        .strip_prefix("0x")
+        .filter(|h| h.len() == 16)
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
+        .ok_or_else(|| format!("bad bits `{bits}`"))?;
+    let value = f64::from_bits(b);
+    let d: f64 = dec.parse().map_err(|_| format!("bad decimal `{dec}`"))?;
+    if d.to_bits() != b {
+        return Err(format!("the decimal {dec} disagrees with the bits {bits}"));
+    }
+    let tag: u64 = tag.parse().map_err(|_| format!("bad tag `{tag}`"))?;
+    if tag == 0 {
+        return Err("a change line's tag is at least 1 (tag 0 is the start's own values)".into());
+    }
+    Ok((clock, pos, (*id).to_owned(), value, tag))
 }
 
 /// Parses a `<decimal> 0x<bits>` value; the bits rule and the decimal must agree.
@@ -166,6 +202,7 @@ pub fn write(render: &Render) -> String {
     let engine = render::fresh_engine(req).ok();
     let mut s = String::new();
     let _ = writeln!(s, "{MAGIC} {VERSION}");
+    let live = render.live.as_ref();
     let mut kv = |k: &str, v: &str| {
         let _ = writeln!(s, "{k} {v}");
     };
@@ -174,6 +211,16 @@ pub fn write(render: &Render) -> String {
     kv("engine.commit", crate::engine_commit());
     kv("conversion", &CONVERSION.to_string());
     kv("recording_counter", "0");
+    // A ranged request (a live take, or a re-render of one) is written as live, so its range and
+    // changes survive a second generation (post-implementation review B4).
+    let ranged = live.is_some() || req.start != 0 || req.len.is_some() || !req.changes.is_empty();
+    kv("live", if ranged { "yes" } else { "no" });
+    kv("start", &req.start.to_string());
+    let avail = (req.input.len() as u64).saturating_sub(req.start);
+    kv(
+        "fed",
+        &req.len.unwrap_or(avail + render.tail_samples).to_string(),
+    );
     kv("block", &req.block.to_string());
     kv("tail", if req.tail { "on" } else { "off" });
     kv("tail_samples", &render.tail_samples.to_string());
@@ -224,6 +271,25 @@ pub fn write(render: &Render) -> String {
             let _ = writeln!(s, "control {} {}", e.identifier, fmt_reading(r));
         }
     }
+    // The scheduled changes (tag ≥ 1) in log order (spec 003 D5); the tag-0 entries come back
+    // from the start values.
+    for c in &req.changes {
+        let clock = match c.clock {
+            rr_dr60::changes::Clock::Input => "in",
+            _ => "out",
+        };
+        let id = rr_dr60::controls::controls()
+            .get(c.control as usize)
+            .map_or("unknown", |e| e.identifier);
+        let _ = writeln!(
+            s,
+            "change {clock} {} {id} {} 0x{:016x} {}",
+            c.position,
+            c.value,
+            c.value.to_bits(),
+            c.tag
+        );
+    }
     s
 }
 
@@ -243,11 +309,14 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
         .strip_prefix(MAGIC)
         .and_then(|r| r.strip_prefix(' '))
         .ok_or(SidecarError::NotASidecar)?;
-    if version != VERSION.to_string() {
-        return Err(SidecarError::UnsupportedVersion(version.to_owned()));
-    }
+    let version: u32 = match version {
+        "1" => 1,
+        "2" => 2,
+        v => return Err(SidecarError::UnsupportedVersion(v.to_owned())),
+    };
     let mut fields = BTreeMap::new();
     let mut controls: Vec<(String, String)> = Vec::new();
+    let mut changes = Vec::new();
     for (n, line) in lines {
         let n = n + 1;
         if line.trim().is_empty() || line.starts_with('#') {
@@ -256,6 +325,10 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
         let (key, value) = line
             .split_once(' ')
             .ok_or_else(|| SidecarError::Malformed(n, "no value".into()))?;
+        if key == "change" && version >= 2 {
+            changes.push(parse_change(value).map_err(|e| SidecarError::Malformed(n, e))?);
+            continue;
+        }
         if key == "control" {
             let (id, v) = value
                 .split_once(' ')
@@ -269,7 +342,7 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
             controls.push((id.to_owned(), v.to_owned()));
             continue;
         }
-        if !REQUIRED.contains(&key) {
+        if !REQUIRED.contains(&key) && !(version >= 2 && V2_REQUIRED.contains(&key)) {
             return Err(SidecarError::Malformed(n, format!("unknown key {key}")));
         }
         if fields.insert(key.to_owned(), value.to_owned()).is_some() {
@@ -296,7 +369,19 @@ pub fn read(text: &str) -> Result<Sidecar, SidecarError> {
             return Err(SidecarError::Missing(k));
         }
     }
-    Ok(Sidecar { fields, controls })
+    if version >= 2 {
+        for k in V2_REQUIRED {
+            if !fields.contains_key(k) {
+                return Err(SidecarError::Missing(k));
+            }
+        }
+    }
+    Ok(Sidecar {
+        version,
+        fields,
+        controls,
+        changes,
+    })
 }
 
 /// Restores a sidecar's values into `panel` and lists every difference (D9). The panel starts

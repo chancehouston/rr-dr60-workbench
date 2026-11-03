@@ -68,6 +68,21 @@ pub const AB_ENGINE_MAP: &str = "Same moment (the engine's one-pass map)";
 pub const AB_SAME_SECONDS: &str = "Same seconds";
 /// Overloads counted on the device.
 pub const OVERLOADS: &str = "Device overloads";
+/// Live (003 D2): an idle control.
+pub const LIVE_IDLE: &str = "Idle: stop to change";
+/// Live: a control the one-pass does not run.
+pub const LIVE_NOT_ONE_PASS: &str = "Not on the one-pass";
+/// Live: a stage off at the start or beyond the tap.
+pub const LIVE_STAGE_OFF: &str = "Stage not running in this configuration";
+/// Live: a route a named-route tap cannot read.
+pub const LIVE_TAP_ROUTE: &str = "Tap not on this route";
+/// Live: a band-filter parameter with the slot empty.
+pub const LIVE_SLOT_EMPTY: &str = "Slot empty";
+/// Live (003 D4): silence the budget inserted.
+pub const LIVE_SKIPPING: &str = "Gate paused: skipping (silence, not engine output)";
+/// Live (003 D8): a take that cannot be reproduced.
+pub const LIVE_INCOMPLETE: &str =
+    "Incomplete (not reproducible): a queue or report buffer overflowed";
 /// An empty take in the views.
 pub const NO_SAMPLES: &str = "No samples: the take is empty";
 /// A sidecar opened before its input.
@@ -149,6 +164,13 @@ pub fn all() -> Vec<String> {
         OVERLOADS,
         OPEN_INPUT_FIRST,
         NO_SAMPLES,
+        LIVE_IDLE,
+        LIVE_NOT_ONE_PASS,
+        LIVE_STAGE_OFF,
+        LIVE_TAP_ROUTE,
+        LIVE_SLOT_EMPTY,
+        LIVE_SKIPPING,
+        LIVE_INCOMPLETE,
         STALE_EXPORT,
     ]
     .iter()

@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Feature 003, the live engine:
+  - the live core in the output callback (10 ms chunks through a FIFO, a bounded skip in drop mode);
+  - live controls with the engine's reasons for the disabled ones;
+  - a schedule list fed just in time;
+  - the timeline and its CSV;
+  - sidecar version 2 (`start`, `fed`, change lines), which reproduces a live take bit for bit.
 - Feature 002, taps, scopes and meters:
   - the meter timeline at 10 ms calls (the render's block is now rate ÷ 100, and the output is unchanged);
   - the reach rules, pinned by behavior;

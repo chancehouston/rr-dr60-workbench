@@ -36,7 +36,16 @@ Guidance for Claude Code working in this repository. Keep it current.
 
 - 2026-11-02: Bootstrapped (the plan of record, CI on macOS). Engine pin `a06318c` (0.92.0).
 - 2026-11-02: **Feature 001 (the offline render session) is merged** (PR #2, merge commit 8afbced, CI green; merged by the agent under the autopilot rule, the owner's desk checklist pending): 54 tests after the post-implementation reviews and convergence (T038, streaming decode). Before that: 45 tests, reach 12/70, one minute at 48 kHz renders in 0.54 s, constitution 1.0.2. The figures are in `specs/001-offline-render-session/records.md`. Engine issues #72 – #74 were filed. The core `Session` holds the rules of opening a file, attaching a render and restoring a sidecar. Next: feature 002 (taps, scopes and meters) on `002-taps-scopes-meters`.
-- 2026-11-02: **Feature 002 is implemented** on its branch: 77 tests, reach 14/70, figures in `specs/002-taps-scopes-meters/records.md`, engine issue #75 (the meter table).
+- 2026-11-02: **Feature 002 (taps, scopes and meters) is merged** (PR #3, merge commit aed08c2, CI green; under the autopilot rule, the owner's desk checklist pending): 81 tests, reach 15/70, figures in `specs/002-taps-scopes-meters/records.md`, engine issue #75 (the meter table). Next: feature 003 (the live engine) on `003-live-engine`.
+- 2026-11-02: **Feature 003 is implemented** on its branch: 91 tests, reach 20/70, live takes reproduce bit for bit; the microphone deferred to 007. Figures in `specs/003-live-engine/records.md`.
+
+## Lessons (003)
+
+- One chunk routine shared by the offline render and the live core makes reproduction true by construction: the engine's output does not depend on the partition, and it logs a change's actual landing position.
+- A just-in-time schedule needs a cursor per clock: the input-clock and output-clock subsequences of the log are each in landing order, and they interleave.
+- Size the live queues for the worst callback, not the average: at 6 kHz a 6000-frame callback runs up to 400 ten-millisecond chunks under the 4× budget.
+- The tap-and-route refusal shows only for the *other* route: a dry run must try every option, not the current value.
+- rustfmt reflows long lines, so a script's exact-text patch silently misses. Assert each anchor, or use the Edit tool after reading the formatted text.
 
 ## Lessons (002)
 

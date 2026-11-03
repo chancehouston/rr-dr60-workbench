@@ -98,9 +98,23 @@ mod mac {
 
     impl Player {
         pub fn start(takes: Takes, shared: Arc<Shared>) -> Result<Self, String> {
+            let rate = takes.rate_hz;
+            let cb_shared = Arc::clone(&shared);
+            Self::start_with(rate, shared, move |l: &mut [f32], r: &mut [f32]| {
+                fill(&takes, &cb_shared, l, r);
+            })
+        }
+
+        /// Starts the unit with any fill function (spec 003 research R-06: the live core's body
+        /// is another one). `fill` runs on the audio thread and must be real-time safe.
+        pub fn start_with(
+            rate: u32,
+            shared: Arc<Shared>,
+            mut fill: impl FnMut(&mut [f32], &mut [f32]) + Send + 'static,
+        ) -> Result<Self, String> {
             let mut unit = AudioUnit::new(IOType::DefaultOutput).map_err(|e| e.to_string())?;
             let fmt = StreamFormat {
-                sample_rate: f64::from(takes.rate_hz),
+                sample_rate: f64::from(rate),
                 sample_format: SampleFormat::F32,
                 flags: LinearPcmFlags::IS_FLOAT
                     | LinearPcmFlags::IS_PACKED
@@ -117,12 +131,11 @@ mod mac {
                 Some(&mastering),
             )
             .map_err(|e| e.to_string())?;
-            let cb_shared = Arc::clone(&shared);
             type Args = render_callback::Args<data::NonInterleaved<f32>>;
             unit.set_render_callback(move |mut args: Args| {
                 let mut ch = args.data.channels_mut();
                 if let (Some(l), Some(r)) = (ch.next(), ch.next()) {
-                    fill(&takes, &cb_shared, l, r);
+                    fill(l, r);
                 }
                 Ok(())
             })
@@ -205,6 +218,43 @@ impl Playback {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (takes, shared);
+            Err(workbench_core::text::PLAYBACK_UNAVAILABLE.to_owned())
+        }
+    }
+
+    /// Starts the live core in the output callback (spec 003 D1): its mono output to both
+    /// channels.
+    ///
+    /// # Errors
+    ///
+    /// The platform's refusal, or `PLAYBACK_UNAVAILABLE` off macOS.
+    pub fn start_live(
+        rate: u32,
+        shared: Arc<Shared>,
+        mut core: workbench_core::live::LiveCore,
+    ) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Self {
+                player: mac::Player::start_with(rate, shared.clone(), move |l, r| {
+                    core.fill(l);
+                    // The monitor volume, on playback only: the take keeps the engine's samples
+                    // (post-implementation review B12).
+                    let vol = f32::from_bits(
+                        shared
+                            .volume_bits
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    for v in l.iter_mut() {
+                        *v *= vol;
+                    }
+                    r.copy_from_slice(l);
+                })?,
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (rate, shared, &mut core);
             Err(workbench_core::text::PLAYBACK_UNAVAILABLE.to_owned())
         }
     }

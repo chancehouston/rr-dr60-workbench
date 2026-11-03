@@ -42,6 +42,16 @@ fn main() -> eframe::Result {
     )
 }
 
+/// A live run (spec 003): the output unit running the live core, the UI's queue ends, the take
+/// being assembled, the start's request and the reasons controls are disabled.
+struct LiveRun {
+    playback: Playback,
+    queues: workbench_core::live::LiveQueues,
+    take: workbench_core::live::TakeBuilder,
+    start_req: workbench_core::render::RenderRequest,
+    reasons: Vec<Option<&'static str>>,
+}
+
 /// A render running on its own thread.
 struct Job {
     progress: Arc<AtomicU64>,
@@ -60,6 +70,12 @@ struct Workbench {
     int_edits: HashMap<u32, String>,
     messages: Vec<String>,
     views: views::Views,
+    live: Option<LiveRun>,
+    live_start_s: f64,
+    schedule: Vec<(u32, f64, f64)>,
+    sched_control: u32,
+    sched_value: String,
+    sched_time: String,
 }
 
 impl Workbench {
@@ -76,6 +92,84 @@ impl Workbench {
             int_edits: HashMap::new(),
             messages: Vec::new(),
             views: views::Views::default(),
+            live: None,
+            live_start_s: 0.0,
+            schedule: Vec::new(),
+            sched_control: 1,
+            sched_value: String::new(),
+            sched_time: String::new(),
+        }
+    }
+
+    /// Starts a live run at the start position with the panel's values and the schedule (D1, D3).
+    fn start_live(&mut self) {
+        self.stop_playback();
+        let Some(mut req) = self.session.plain_request() else {
+            return;
+        };
+        req.start = (self.live_start_s * f64::from(req.rate_hz)).max(0.0) as u64;
+        let list: Vec<(rr_dr60::changes::Clock, u64, u32, f64)> = self
+            .schedule
+            .iter()
+            .map(|&(control, value, t)| {
+                let clock =
+                    rr_dr60::changes::clock_of(control).unwrap_or(rr_dr60::changes::Clock::Output);
+                (
+                    clock,
+                    (t * f64::from(req.rate_hz)).round() as u64,
+                    control,
+                    value,
+                )
+            })
+            .collect();
+        let reasons = (0..rr_dr60::controls::controls().len() as u32)
+            .map(|i| workbench_core::live::live_reason(&req, i))
+            .collect();
+        match workbench_core::live::LiveCore::new(&req, &list) {
+            Ok((core, queues)) => {
+                match Playback::start_live(req.rate_hz, self.shared.clone(), core) {
+                    Ok(playback) => {
+                        self.live = Some(LiveRun {
+                            playback,
+                            queues,
+                            take: workbench_core::live::TakeBuilder::default(),
+                            start_req: req,
+                            reasons,
+                        });
+                        self.messages.clear();
+                    }
+                    Err(e) => self.messages = vec![e],
+                }
+            }
+            Err(e) => self.messages = vec![e.to_string()],
+        }
+    }
+
+    /// Stops the live run and makes its take the session's render (D5).
+    fn stop_live(&mut self) {
+        let Some(mut run) = self.live.take() else {
+            return;
+        };
+        drop(run.playback);
+        run.take.drain(&mut run.queues);
+        let refused: Vec<String> = run
+            .take
+            .replies
+            .iter()
+            .filter_map(|r| r.error.map(|e| format!("A live change was refused: {e}")))
+            .collect();
+        let incomplete = run.queues.state.incomplete.load(Ordering::Relaxed);
+        match run.take.finish(&run.start_req, &run.queues.state) {
+            Ok(take) => {
+                // The panel takes the take's end values (B6).
+                self.session.accept_live_take(take);
+                self.int_edits.clear();
+                self.messages.extend(refused);
+                if incomplete {
+                    self.messages.push(text::LIVE_INCOMPLETE.to_owned());
+                }
+            }
+            Err(e) => self.messages.push(e.to_string()),
         }
     }
 
@@ -86,6 +180,7 @@ impl Workbench {
     }
 
     fn open_file(&mut self, path: PathBuf, channel: Channel) {
+        self.stop_live();
         let before = self.session.input().map(|i| i.raw_sha256);
         match self.session.open(&path, channel) {
             Ok(()) => {
@@ -301,10 +396,25 @@ impl eframe::App for Workbench {
             self.messages = vec![text::DEVICE_LOST.to_owned()];
         }
         self.views.poll(&ctx);
+        if let Some(run) = &mut self.live {
+            run.take.drain(&mut run.queues);
+            // Stop once every sample has been played (B11), on a failure (B2) or a lost device.
+            let drained = run.queues.state.drained.load(Ordering::Relaxed);
+            let failed = run.queues.state.failed.load(Ordering::Relaxed);
+            let lost = run.playback.device_lost();
+            if drained || failed || lost {
+                self.messages.clear();
+                self.stop_live();
+                if lost {
+                    self.messages.insert(0, text::DEVICE_LOST.to_owned());
+                }
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         if self.job.is_some() || self.playback.is_some() || self.views.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        if self.live.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.switch();
         }
         egui::Panel::top("file").show(ui, |ui| self.file_bar(ui));
@@ -414,6 +524,8 @@ impl Workbench {
 
     fn controls_panel(&mut self, ui: &mut egui::Ui) {
         let int_edits = &mut self.int_edits;
+        let live_reasons: Option<Vec<Option<&'static str>>> =
+            self.live.as_ref().map(|r| r.reasons.clone());
         let Some(panel) = self.session.panel_mut() else {
             ui.label("Open a file to edit the engine's controls.");
             return;
@@ -453,10 +565,16 @@ impl Workbench {
                                         e.assumptions.join(", ")
                                     );
                                     ui.label(e.name).on_hover_text(hover);
+                                    let live_reason = live_reasons
+                                        .as_ref()
+                                        .and_then(|r| r.get(row.index as usize).copied().flatten());
                                     let enabled = matches!(
                                         row.status,
                                         RowStatus::Accepted | RowStatus::Refused(_)
-                                    );
+                                    ) && live_reason.is_none();
+                                    if let Some(why) = live_reason {
+                                        ui.weak(why);
+                                    }
                                     ui.add_enabled_ui(enabled, |ui| {
                                         if let Some(v) =
                                             editor(ui, row.index, &e.value, row.value, e.unit, int_edits)
@@ -480,6 +598,18 @@ impl Workbench {
         });
         for (i, v) in edits {
             panel.set(i, v);
+            if let Some(run) = &mut self.live
+                && run
+                    .queues
+                    .commands
+                    .push(workbench_core::live::Command {
+                        control: i,
+                        value: workbench_core::live::value_of(v),
+                    })
+                    .is_err()
+            {
+                self.messages = vec!["The change queue is full: try again".into()];
+            }
         }
     }
 
@@ -596,14 +726,25 @@ impl Workbench {
         let mut stop = false;
         let mut export = false;
         let (take, pos) = self.shared.cursor();
+        // One output stream: A/B playback is off while live (spec 003 D9).
+        let idle = self.live.is_none();
         ui.horizontal(|ui| {
-            if ui.button("Play original").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Play original"))
+                .clicked()
+            {
                 play = Some(Take::Original);
             }
-            if ui.button("Play render").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("Play render"))
+                .clicked()
+            {
                 play = Some(Take::Render);
             }
-            if ui.button("A/B (space)").clicked() {
+            if ui
+                .add_enabled(idle, egui::Button::new("A/B (space)"))
+                .clicked()
+            {
                 switch = true;
             }
             if ui.button("Stop").clicked() {
@@ -652,6 +793,8 @@ impl Workbench {
         if !cfg!(target_os = "macos") {
             ui.weak(text::PLAYBACK_UNAVAILABLE);
         }
+        ui.separator();
+        self.live_section(ui);
         if ui.button("Export render…").clicked() {
             export = true;
         }
@@ -729,6 +872,189 @@ fn editor(
         _ => {
             ui.label(format!("{value:?}"));
             None
+        }
+    }
+}
+
+impl Workbench {
+    /// Live mode, the schedule list and the timeline (spec 003 D1 – D6).
+    fn live_section(&mut self, ui: &mut egui::Ui) {
+        ui.strong("Live");
+        ui.horizontal(|ui| {
+            if self.live.is_none() {
+                ui.label("start at (s)");
+                ui.add(
+                    egui::DragValue::new(&mut self.live_start_s)
+                        .range(0.0..=36_000.0)
+                        .speed(0.1),
+                );
+                if ui.button("Go live").clicked() {
+                    self.start_live();
+                }
+            } else if ui.button("Stop live").clicked() {
+                self.stop_live();
+            }
+        });
+        if let Some(run) = &self.live {
+            let st = &run.queues.state;
+            let rate = f64::from(run.start_req.rate_hz);
+            ui.label(format!(
+                "Live: fed {:.2} s, produced {:.2} s; skips {}",
+                st.fed.load(Ordering::Relaxed) as f64 / rate,
+                st.produced.load(Ordering::Relaxed) as f64 / rate,
+                st.skips.load(Ordering::Relaxed)
+            ));
+            if st.skips.load(Ordering::Relaxed) > 0 {
+                ui.weak(text::LIVE_SKIPPING);
+            }
+            // The latest 10 ms row, every field with 002's reach rule (D7, B13).
+            if let Some(row) = run.take.rows.last() {
+                let route = workbench_core::meters::route_of(&run.start_req.engine_values);
+                egui::Grid::new("live meters").show(ui, |ui| {
+                    for f in &workbench_core::meters::FIELDS {
+                        ui.label(f.id);
+                        if workbench_core::meters::reached(f, &run.start_req.settings, route) {
+                            let v = (f.get)(&row.meters);
+                            ui.add(
+                                egui::ProgressBar::new((v as f32 / 2.0).clamp(0.0, 1.0))
+                                    .desired_width(120.0),
+                            );
+                            ui.label(workbench_core::meters::display(
+                                f,
+                                row,
+                                run.start_req.rate_hz,
+                            ));
+                        } else {
+                            ui.weak("not reached (rest)");
+                            ui.label("");
+                        }
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+        // The schedule list (D3).
+        egui::CollapsingHeader::new(format!("Scheduled changes ({})", self.schedule.len())).show(
+            ui,
+            |ui| {
+                let mut remove = None;
+                for (k, (c, v, t)) in self.schedule.iter().enumerate() {
+                    let e = &rr_dr60::controls::controls()[*c as usize];
+                    let clock = match rr_dr60::changes::clock_of(*c) {
+                        Ok(rr_dr60::changes::Clock::Input) => "input s from the start",
+                        _ => "take s (output)",
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} = {v} at {t} {clock}", e.identifier));
+                        if ui.small_button("remove").clicked() {
+                            remove = Some(k);
+                        }
+                    });
+                }
+                if let Some(k) = remove {
+                    self.schedule.remove(k);
+                }
+                ui.horizontal(|ui| {
+                    let live: Vec<(u32, &str)> = rr_dr60::controls::controls()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.timing == rr_dr60::controls::ControlTiming::Live)
+                        .map(|(i, e)| (i as u32, e.identifier))
+                        .collect();
+                    let name = live
+                        .iter()
+                        .find(|(i, _)| *i == self.sched_control)
+                        .map_or("", |(_, n)| n);
+                    egui::ComboBox::from_id_salt("sched control")
+                        .selected_text(name)
+                        .show_ui(ui, |ui| {
+                            for (i, n) in &live {
+                                ui.selectable_value(&mut self.sched_control, *i, *n);
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sched_value)
+                            .hint_text("value")
+                            .desired_width(70.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sched_time)
+                            .hint_text("time s")
+                            .desired_width(70.0),
+                    );
+                    if ui.button("Add").clicked()
+                        && let (Ok(v), Ok(t)) = (
+                            self.sched_value.trim().parse::<f64>(),
+                            self.sched_time.trim().parse::<f64>(),
+                        )
+                    {
+                        self.schedule.push((self.sched_control, v, t));
+                    }
+                });
+            },
+        );
+        // The timeline of the session's take (D6).
+        if let Some(r) = self.session.render()
+            && r.live.is_some()
+        {
+            let live = r.live.as_ref().unwrap();
+            egui::CollapsingHeader::new(format!(
+                "Timeline: {} changes, {} gate reports, {} skips",
+                r.log.len(),
+                r.events.len(),
+                live.skips.len()
+            ))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for e in &r.log {
+                            let id = rr_dr60::controls::controls()
+                                .get(e.control as usize)
+                                .map_or("?", |c| c.identifier);
+                            ui.monospace(format!(
+                                "change {id} at {} : {} → {} (tag {})",
+                                e.position, e.before, e.after, e.tag
+                            ));
+                        }
+                        for e in &r.events {
+                            ui.monospace(format!(
+                                "{} at {} ({} samples)",
+                                if r.drop_mode {
+                                    "splice"
+                                } else {
+                                    "muted region"
+                                },
+                                e.output_position,
+                                e.input_length
+                            ));
+                        }
+                        for (at, n) in &live.skips {
+                            ui.monospace(format!(
+                                "skip at {at} ({n} samples of silence, not engine output)"
+                            ));
+                        }
+                    });
+                if ui.button("Export timeline CSV…").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("timeline.csv")
+                        .save_file()
+                {
+                    let csv = workbench_core::csv::timeline_csv(r);
+                    self.messages = vec![match workbench_core::csv::write_with_sidecar(
+                        &mut export::RealFs,
+                        &path,
+                        &csv,
+                        r,
+                    ) {
+                        Ok(()) => format!("Exported {} with its sidecar", path.display()),
+                        Err(e) => format!("The export failed: {e}"),
+                    }];
+                }
+            });
+            if live.incomplete {
+                ui.colored_label(egui::Color32::LIGHT_RED, text::LIVE_INCOMPLETE);
+            }
         }
     }
 }

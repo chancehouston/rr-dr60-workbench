@@ -169,3 +169,40 @@ pub fn write_with_sidecar(
     fs.write(&c, csv.as_bytes())?;
     fs.write(&side, crate::sidecar::write(r).as_bytes())
 }
+
+/// The live take's timeline (spec 003 D6): the change log, the gate's reports and the budget's
+/// skips, in that order, one row each.
+pub fn timeline_csv(r: &Render) -> String {
+    let mut s = String::from("# rr-dr60-workbench timeline 1\n");
+    s += &engine_line(r);
+    s += "# change positions in their control's clock from the run's start; gate reports and skips in the take's output positions\n";
+    s += "kind,clock,position,control,before,after,tag,length\n";
+    for e in &r.log {
+        let clock = match rr_dr60::changes::clock_of(e.control) {
+            Ok(rr_dr60::changes::Clock::Input) => "in",
+            _ => "out",
+        };
+        let id = rr_dr60::controls::controls()
+            .get(e.control as usize)
+            .map_or("unknown", |c| c.identifier);
+        let _ = writeln!(
+            s,
+            "change,{clock},{},{id},{},{},{},",
+            e.position, e.before, e.after, e.tag
+        );
+    }
+    for e in &r.events {
+        let kind = if r.drop_mode {
+            "splice"
+        } else {
+            "muted_region"
+        };
+        let _ = writeln!(s, "{kind},out,{},,,,,{}", e.output_position, e.input_length);
+    }
+    if let Some(l) = &r.live {
+        for (at, n) in &l.skips {
+            let _ = writeln!(s, "skip,out,{at},,,,,{n}");
+        }
+    }
+    s
+}
