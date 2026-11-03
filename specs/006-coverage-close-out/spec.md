@@ -31,7 +31,19 @@
   - **Alignment.** A gate-off comparison in drop mode does not line up sample for sample; the tour says so.
 - **The tour's words** (coach 8). Its words are the manifest's: status, path and confidence by the manifest's own option words, and each switch's description from the control manifest. The stage-0 controls (the slot, the output clamp, the seed, the tap, the rate…) are on a "no stage" page. A source scan finds no stage-text literals in the tour's module.
 - **The reach test** (coach 6). Each of the 19 new methods is called as `Pipeline::name(`. The scan ignores comments, and the de-duplicated method list must equal the engine's method set.
-- **Runtime** (coach 10): the checks run on a background thread with progress and cancel.
+- **Runtime** (coach 10): the checks run on a background thread; the one-pass check can be cancelled.
+
+### Session 2026-11-03 (post-implementation reviews: dated restatements)
+
+- **The reset oracle's switches** (hardware B1): a stage 11 – 13 switch that landed during the first run is "landed off, still running" (engine spec 021 D11), not "configured off". The oracle is built with the request's own switches and the landed value scheduled at position 0, tag 0, which the log filter drops. It is tested with a band-filter slot and a speaker-off landing.
+- **The window renders the tour's request** (coach 1): "Compare without this stage" renders `WithoutStage.request` (the stage's switches off, its scheduled entries left out). The session's panel takes the switches off, so a later render of the panel's request agrees, apart from a restored range's left-out entries.
+- **After the tour's render** (coach 2, hardware B2), the window says "no effect at this tap and route" when A and B are bit-identical, and the latency offset when the stage changes the latency (the coder: 480 host samples at 16 kHz; stages 4 and 10: one). The Compare tab aligns by latency.
+- **The verdicts are reported** (coach 3): the playback check's getters against the values set (`getters_match`), and the slot's own calls against the by-index readings (`matches_index`), each shown as an engine finding when it fails.
+- **The playback check** runs on a thread with a copy of the device (coach 4). **The plain setters** refuse an option value the by-index path refuses (hardware B4).
+- **Stage 9's pointer** is dropped (coach 7): naming another stage would be workbench stage text. A page without a switch shows `NotOffered::NoSwitch`'s sentence. The gate-alignment notice is keyed on the request (the gate's switch turned off in drop mode), not on a stage number (coach 8). Comparison notices are the workbench's UI text, not stage descriptions.
+- **Exact readings** (hardware B6, coach 9): the pre-encoder latency equals the record latency less 180 · rate / 6000 exactly, at seven rates.
+- **The tests confirm the schedules landed** (hardware B5).
+- **The reach test** ignores comment lines, asserts the nineteen as `Pipeline::name(`, and checks that the window calls the checks' entry points (coach 5). Its list names every method (coach 6).
 
 ## Decisions (in force under autopilot)
 
@@ -87,7 +99,7 @@
 
 ## Success Criteria *(mandatory)*
 
-- **SC-001**: The reach test prints and asserts 70/70.
+- **SC-001**: The reach test prints and asserts 70/70 (`reach`, `the_nineteen_by_name_and_from_the_window`).
 - **SC-002**: At seven rates, every call form agrees with the render (asserted).
 - **SC-003**: The owner's desk checklist: run both checks; step through the tour and compare without one stage.
 

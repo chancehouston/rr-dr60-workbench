@@ -294,9 +294,46 @@ pub fn reset_check(req: &RenderRequest, cancel: &AtomicBool) -> Result<ResetChec
         .collect();
     Pipeline::reset(&mut p);
     let reset_run = run_on(&mut p, req, Form::WithEventsAndChanges, cancel)?;
-    let mut q = Pipeline::new(settings).map_err(Refusal::Engine)?;
+    // A playback-side switch that landed during the first run is "landed off, still running",
+    // not "configured off" (engine spec 021 D11; hardware review B1): the oracle is built with
+    // the request's own switches and the landed values scheduled at position 0, tag 0.
+    let switches = [
+        "output.volume_amp_enabled",
+        "output.speaker_enabled",
+        "output.earphone_enabled",
+    ];
+    let mut oracle_settings = settings;
+    let mut landed = Vec::new();
+    for id in switches {
+        let Some(i) = rr_dr60::controls::controls()
+            .iter()
+            .position(|e| e.identifier == id)
+            .map(|i| i as u32)
+        else {
+            continue;
+        };
+        let (now, then) = (
+            rr_dr60::control_map::settings_value(&settings, i),
+            rr_dr60::control_map::settings_value(&req.settings, i),
+        );
+        if let (Ok(now), Ok(then)) = (now, then)
+            && now != then
+        {
+            let _ = rr_dr60::control_map::set_settings_value(&mut oracle_settings, i, then);
+            landed.push((i, now));
+        }
+    }
+    let mut q = Pipeline::new(oracle_settings).map_err(Refusal::Engine)?;
     for (i, r) in others {
         q.set_control_value(i, r).map_err(Refusal::Engine)?;
+    }
+    for (i, r) in landed {
+        let v = match r {
+            rr_dr60::control_map::ControlReading::Switch(b) => f64::from(u8::from(b)),
+            _ => continue,
+        };
+        q.schedule_change(Stream::OnePass, 0, i, v, 0)
+            .map_err(Refusal::Change)?;
     }
     let oracle = run_on(&mut q, req, Form::WithEventsAndChanges, cancel)?;
     let bits = reset_run.samples.len() == oracle.samples.len()

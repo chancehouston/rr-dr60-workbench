@@ -117,6 +117,7 @@ pub struct PlayTake {
 }
 
 /// The persistent device engine (D1), with the run of every recording it made (spec 005 D1).
+#[derive(Clone)]
 pub struct Device {
     p: Pipeline,
     runs: BTreeMap<u64, Run>,
@@ -567,7 +568,16 @@ impl Device {
         ));
         v.push((
             "slot (component, parameters)".into(),
-            format!("{:?}, {:?}", c.component, c.parameters),
+            format!(
+                "{:?}, {:?}; {}",
+                c.component,
+                c.parameters,
+                if c.matches_index {
+                    "equal to the by-index readings"
+                } else {
+                    "DIFFERENT from the by-index readings (an engine finding)"
+                }
+            ),
         ));
         v
     }
@@ -607,6 +617,8 @@ impl Device {
         let identical = takes.iter().all(|t| {
             t.len() == first.len() && t.iter().zip(first).all(|(a, b)| a.to_bits() == b.to_bits())
         });
+        // The getters read what was set, as f32 (coach review 3).
+        let getters_match = getters.iter().all(|g| g.reads(values));
         let mut d = Self {
             p: self.p.clone(),
             runs: BTreeMap::new(),
@@ -621,6 +633,7 @@ impl Device {
         Ok(PlaybackCheck {
             identical,
             equals_take,
+            getters_match,
             getters,
             lengths: takes.iter().map(Vec::len).collect(),
         })
@@ -637,11 +650,32 @@ impl Device {
             parameters.push(v);
             i += 1;
         }
+        // The slot by its own calls against the by-index readings (D3, coach review 3).
+        let slot_index = rr_dr60::controls::controls()
+            .iter()
+            .position(|e| e.identifier == "insert.before_limiter")
+            .map(|i| i as u32);
+        let component = Pipeline::component(&self.p, BeforeLimiter);
+        let matches_index = slot_index.is_none_or(|si| {
+            self.p.control_value(si) == Ok(ControlReading::Choice(component as u32))
+        }) && parameters.iter().enumerate().all(|(k, v)| {
+            rr_dr60::controls::controls()
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.stage == 0 && e.identifier.starts_with("band_filter."))
+                .nth(k)
+                .is_none_or(|(ci, _)| match self.p.control_value(ci as u32) {
+                    Ok(ControlReading::Continuous(x)) => x == *v,
+                    Ok(ControlReading::Choice(c)) => c as f32 == *v,
+                    _ => true,
+                })
+        });
         CallReadings {
+            matches_index,
             pre_encoder_latency: Pipeline::record_latency_pre_encoder_samples(&self.p),
             record_latency: self.p.record_latency_samples(),
             getters: Getters::of(&self.p),
-            component: Pipeline::component(&self.p, BeforeLimiter),
+            component,
             parameters,
         }
     }
@@ -1160,6 +1194,29 @@ pub struct Getters {
 }
 
 impl Getters {
+    /// Whether these readings are the `values` set (index, reading), as f32.
+    pub fn reads(&self, values: &[(u32, ControlReading)]) -> bool {
+        values.iter().all(|&(i, v)| {
+            let id = rr_dr60::controls::controls()
+                .get(i as usize)
+                .map_or("", |e| e.identifier);
+            match (id, v) {
+                ("route", ControlReading::Choice(c)) => {
+                    (self.route == rr_dr60::Route::Earphone) == (c == 1)
+                }
+                ("volume", ControlReading::Continuous(x)) => self.volume == x,
+                ("battery_volts", ControlReading::Continuous(x)) => self.battery_volts == x,
+                ("playback_speed", ControlReading::Integer(l)) => {
+                    u64::from(self.playback_speed) == l
+                }
+                ("playback_speed_mode", ControlReading::Choice(c)) => {
+                    (self.playback_speed_mode == rr_dr60::speed::SpeedMode::PitchKept) == (c == 1)
+                }
+                _ => true,
+            }
+        })
+    }
+
     /// The getters of `p`.
     pub fn of(p: &Pipeline) -> Self {
         Self {
@@ -1179,6 +1236,8 @@ pub struct PlaybackCheck {
     pub identical: bool,
     /// They equal 004's play to take.
     pub equals_take: bool,
+    /// Every getter read the value set (coach review 3).
+    pub getters_match: bool,
     /// The getters before each start, in the takes' order.
     pub getters: Vec<Getters>,
     /// The takes' lengths.
@@ -1188,6 +1247,8 @@ pub struct PlaybackCheck {
 /// The readings by their own calls (spec 006 D3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallReadings {
+    /// `component` and `component_parameter_value` equal the by-index readings.
+    pub matches_index: bool,
     /// `record_latency_pre_encoder_samples()`.
     pub pre_encoder_latency: u32,
     /// `record_latency_samples()`.
@@ -1206,7 +1267,9 @@ fn set_plain(p: &mut Pipeline, i: u32, v: ControlReading) -> Result<(), Error> {
         .get(i as usize)
         .map_or("", |e| e.identifier);
     match (id, v) {
-        ("route", ControlReading::Choice(c)) => {
+        // The options' values 0 and 1 (the control manifest's); anything else goes to the
+        // by-index path, refused there the same way (hardware review B4).
+        ("route", ControlReading::Choice(c @ (0 | 1))) => {
             Pipeline::set_route(
                 p,
                 if c == 1 {
@@ -1222,7 +1285,7 @@ fn set_plain(p: &mut Pipeline, i: u32, v: ControlReading) -> Result<(), Error> {
         ("playback_speed", ControlReading::Integer(l)) => {
             Pipeline::set_playback_speed(p, u8::try_from(l).unwrap_or(u8::MAX))
         }
-        ("playback_speed_mode", ControlReading::Choice(c)) => {
+        ("playback_speed_mode", ControlReading::Choice(c @ (0 | 1))) => {
             Pipeline::set_playback_speed_mode(
                 p,
                 if c == 1 {

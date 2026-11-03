@@ -77,6 +77,13 @@ fn one_pass_forms_agree() {
             assert_eq!(first.events, r.events);
             assert_eq!(first.log, r.log);
             assert!(!first.events.is_empty(), "{rate} {mode}: the gate acted");
+            // The schedule landed (hardware review B5).
+            for t in [1, 2] {
+                assert!(
+                    first.log.iter().any(|e| e.tag == t),
+                    "{rate} {mode}: tag {t}"
+                );
+            }
             let reset = c.reset.as_ref().unwrap();
             assert!(
                 reset.agrees,
@@ -108,6 +115,51 @@ fn reset_keeps_the_landed_values() {
     assert_ne!(
         first.samples, rc.reset_run.samples,
         "the reset render starts from the landed volume and knee"
+    );
+    // A band-filter slot and a speaker-off landing (coach review 11, hardware review B1): the
+    // oracle rebuilds the landed switch as a position-0 landing.
+    for rate in [6000, 48_000] {
+        let x = voiced(rate, 1.0, 0.5);
+        let mut req = request(rate, &x, |p| {
+            set_choice(p, "insert.before_limiter", "band_filter");
+            set_num(p, "band_filter.frequency_hz", 800.0);
+        });
+        req.changes = vec![Scheduled {
+            clock: Clock::Output,
+            position: u64::from(rate) / 2,
+            control: idx("output.speaker_enabled"),
+            value: 0.0,
+            tag: 1,
+        }];
+        let rc = checks::reset_check(&req, &no).unwrap();
+        assert!(rc.agrees, "{rate}: the landed switch");
+    }
+}
+
+/// The returning forms leave both clocks unchanged on a refusal (coach review 10).
+#[test]
+fn refusal_leaves_the_clocks() {
+    let rate = 8000;
+    let x = voiced(rate, 0.3, 0.5);
+    let mut req = request(rate, &x, |p| set_choice(p, "tap", "after_speaker"));
+    let route = idx("route");
+    match req.engine_values.iter_mut().find(|(i, _)| *i == route) {
+        Some(v) => v.1 = ControlReading::Choice(1),
+        None => req.engine_values.push((route, ControlReading::Choice(1))),
+    }
+    let mut p = workbench_core::render::fresh_engine(&req).unwrap();
+    let before = (
+        p.input_position(rr_dr60::Stream::OnePass).unwrap(),
+        p.stream_position(rr_dr60::Stream::OnePass).unwrap(),
+    );
+    let mut out = vec![0.0f32; 80];
+    assert!(rr_dr60::Pipeline::process(&mut p, &x[..80], &mut out).is_err());
+    assert_eq!(
+        (
+            p.input_position(rr_dr60::Stream::OnePass).unwrap(),
+            p.stream_position(rr_dr60::Stream::OnePass).unwrap()
+        ),
+        before
     );
 }
 
@@ -187,6 +239,15 @@ fn playback_forms_agree() {
         let c = d.playback_check(1, &values, &changes).unwrap();
         assert!(c.identical, "{rate}: {:?}", c.lengths);
         assert!(c.equals_take, "{rate}");
+        assert!(c.getters_match, "{rate}");
+        // The change landed: without it the takes differ (hardware review B5).
+        let plain = d.playback_check(1, &values, &[]).unwrap();
+        assert!(plain.identical);
+        // On a clone: play to take sets the values on the device it runs on.
+        let mut e = d.clone();
+        let a = e.play_to_take(1, &values, &changes).unwrap();
+        let b = e.play_to_take(1, &values, &[]).unwrap();
+        assert_ne!(a.samples, b.samples, "{rate}: the volume change landed");
         for g in &c.getters {
             assert_eq!(g.route, rr_dr60::Route::Earphone);
             assert_eq!(g.volume, 0.4f32);
@@ -223,14 +284,18 @@ fn readings_by_their_calls() {
             .unwrap();
             let r = d.call_readings();
             assert_eq!(r.component, ComponentId::BandFilter);
-            assert_eq!(r.parameters[1], 500.0);
+            assert!(r.parameters.contains(&500.0), "{:?}", r.parameters);
             assert!(r.parameters.len() >= 4);
-            let delay = if codec { 180 * rate / 6000 } else { 0 };
-            let want = r.record_latency - delay;
             assert!(
-                r.pre_encoder_latency.abs_diff(want) <= 1,
-                "{rate} {codec}: {} vs {want}",
-                r.pre_encoder_latency
+                r.matches_index,
+                "{rate} {codec}: the slot by its calls and by index"
+            );
+            // Exact at every rate (hardware review B6): 180 · rate / 6000 is whole.
+            let delay = if codec { 180 * rate / 6000 } else { 0 };
+            assert_eq!(
+                r.pre_encoder_latency,
+                r.record_latency - delay,
+                "{rate} {codec}"
             );
         }
     }

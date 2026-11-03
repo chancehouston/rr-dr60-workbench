@@ -10,4 +10,4 @@ description: "Tasks for feature 006, the coverage close-out"
 - [X] T004 Tests in `tests/checks.rs` (plan's Testing).
 - [X] T005 The window: the two checks, the Tour tab (plan R-06).
 - [X] T006 `reach` asserts 70/70 and a complete list; engine issue #79 (the manifest's words).
-- [ ] T007 The gate; post-implementation reviews (coach and hardware), applied before the PR (records.md).
+- [X] T007 The gate; post-implementation reviews (coach and hardware), applied before the PR (records.md).
