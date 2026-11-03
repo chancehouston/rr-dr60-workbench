@@ -1,6 +1,6 @@
 # Records: engine 0.93 adoption
 
-Recorded on 2026-11-03, with the engine at `3890bfe` (0.93.0).
+Recorded on 2026-11-03, with the engine at `3890bfe` (0.93.0). Merged as PR #19, merge commit `311eaa0`, CI green.
 
 | Check | Result |
 |---|---|
