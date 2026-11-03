@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver};
 use eframe::egui;
 use egui_plot::{Line, Plot};
 use workbench_core::ab::{self, AbMode};
+use workbench_core::analysis::compare;
 use workbench_core::analysis::envelope::Envelope;
 use workbench_core::analysis::spectrogram::{self, Spectrogram};
 use workbench_core::analysis::spectrum::{self, SpectrumPair};
@@ -33,6 +34,8 @@ pub enum Tab {
     Stages,
     /// The device: the recorder, the memory, playback to a take (spec 004).
     Device,
+    /// A against B (spec 005b).
+    Compare,
 }
 
 struct Running<T> {
@@ -60,6 +63,39 @@ pub struct Views {
     taps: Option<TapTable>,
     meter_on: Vec<bool>,
     pub messages: Vec<String>,
+    cmp_align: compare::Align,
+    cmp: Option<Cmp>,
+}
+
+/// A comparison computed for one pair of renders and an alignment (spec 005b).
+struct Cmp {
+    key: ([u8; 32], [u8; 32], compare::Align),
+    env: (Envelope, Envelope),
+    diff: compare::ParamDiff,
+    null: Result<compare::NullTest, compare::Refused>,
+    spectral: Result<SpectrumPair, compare::Refused>,
+}
+
+fn fmt_figures(f: &compare::Figures, rate: u32) -> Vec<String> {
+    let at = |i: u64| format!("{i} ({:.4} s)", i as f64 / f64::from(rate));
+    vec![
+        format!("samples compared: {} from A's {}", f.samples, at(f.from)),
+        if f.differing == 0 {
+            "bit-identical".to_owned()
+        } else {
+            format!(
+                "{} samples differ; the first at {}",
+                f.differing,
+                f.first.map_or_else(String::new, at)
+            )
+        },
+        format!("peak |d|: {:.2} dBFS at {}", f.peak_dbfs, at(f.peak_at)),
+        format!("RMS of d: {:.2} dB re RMS 1.0", f.rms_db),
+        match f.depth_db {
+            Some(d) => format!("null depth RMS(d) ÷ RMS(A): {d:.2} dB"),
+            None => "null depth: A is silent".to_owned(),
+        },
+    ]
 }
 
 fn start<T: Send + 'static>(
@@ -536,6 +572,218 @@ impl Views {
                     .join(", ")
             ));
         });
+    }
+}
+
+impl Views {
+    /// The Compare tab (spec 005b D1 – D4): A (the current render) against B (the kept one).
+    pub fn compare(&mut self, ui: &mut egui::Ui, session: &Session) {
+        let (Some(a), Some(b)) = (session.render(), session.b()) else {
+            ui.label("Render, press Keep as B in the Session tab, change something and render again: A is the current render, B the kept one.");
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.label("Alignment");
+            ui.selectable_value(
+                &mut self.cmp_align,
+                compare::Align::Latency,
+                "latency-aligned",
+            );
+            ui.selectable_value(&mut self.cmp_align, compare::Align::SampleZero, "sample 0");
+        });
+        let key = (a.output_sha256, b.output_sha256, self.cmp_align);
+        if self.cmp.as_ref().is_none_or(|c| c.key != key) {
+            self.cmp = Some(Cmp {
+                key,
+                env: (Envelope::new(&a.samples), Envelope::new(&b.samples)),
+                diff: compare::param_diff(&a.request, &b.request),
+                null: compare::null_test(a, b, self.cmp_align),
+                spectral: compare::spectral(a, b),
+            });
+        }
+        let c = self.cmp.as_ref().expect("computed");
+        let rate = a.request.rate_hz;
+        let span = |r: &Render| {
+            format!(
+                "input from {} ({:.3} s), {} output samples, latency {}",
+                r.request.start,
+                r.request.start as f64 / f64::from(rate),
+                r.samples.len(),
+                r.latency_samples
+            )
+        };
+        ui.label(format!("A: {}", span(a)));
+        ui.label(format!("B: {}", span(b)));
+        let len = a.samples.len().max(b.samples.len()) as u64;
+        let cols = ui.available_width().max(100.0) as usize;
+        strip(
+            ui,
+            "A (output samples)",
+            &c.env.0.columns(&a.samples, (0, len), cols),
+            None,
+            &[],
+        );
+        strip(
+            ui,
+            "B (output samples)",
+            &c.env.1.columns(&b.samples, (0, len), cols),
+            None,
+            &[],
+        );
+        ui.separator();
+        ui.strong("Parameter diff");
+        if c.diff.is_empty() {
+            ui.label("No difference");
+        } else {
+            egui::Grid::new("cmp_diff").striped(true).show(ui, |ui| {
+                for h in ["", "A", "B"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                let show = |r: Option<rr_dr60::control_map::ControlReading>| {
+                    r.map_or_else(
+                        || "(not in the request)".to_owned(),
+                        workbench_core::sidecar::fmt_reading,
+                    )
+                };
+                for d in &c.diff.controls {
+                    ui.label(d.identifier);
+                    ui.monospace(show(d.a));
+                    ui.monospace(show(d.b));
+                    ui.end_row();
+                }
+                let mut row = |k: &str, x: String, y: String| {
+                    ui.label(k);
+                    ui.monospace(x);
+                    ui.monospace(y);
+                    ui.end_row();
+                };
+                if let Some((x, y)) = &c.diff.input {
+                    row("input SHA-256", x.clone(), y.clone());
+                }
+                if let Some((x, y)) = c.diff.channel {
+                    row("channel", format!("{x:?}"), format!("{y:?}"));
+                }
+                if let Some((x, y)) = c.diff.start {
+                    row("start", x.to_string(), y.to_string());
+                }
+                if let Some((x, y)) = c.diff.len {
+                    row("length", format!("{x:?}"), format!("{y:?}"));
+                }
+                if let Some((x, y)) = c.diff.tail {
+                    row("tail", x.to_string(), y.to_string());
+                }
+            });
+            let ch = |v: &[workbench_core::render::Scheduled]| -> String {
+                v.iter()
+                    .map(|c| {
+                        let id = rr_dr60::controls::controls()
+                            .get(c.control as usize)
+                            .map_or("?", |e| e.identifier);
+                        format!(
+                            "{:?} {} {id} {} tag {}",
+                            c.clock, c.position, c.value, c.tag
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            if !c.diff.a_only.is_empty() {
+                ui.label(format!("Changes in A only: {}", ch(&c.diff.a_only)));
+            }
+            if !c.diff.b_only.is_empty() {
+                ui.label(format!("Changes in B only: {}", ch(&c.diff.b_only)));
+            }
+        }
+        ui.separator();
+        ui.strong("Null test: d = A[i] − B[i + s], 64-bit (the workbench's own analysis of the engine's outputs; nothing is played or exported from d)");
+        match &c.null {
+            Err(e) => {
+                ui.label(e.to_string());
+            }
+            Ok(t) => {
+                ui.label(format!(
+                    "{} (s = {}); lengths A {} and B {}; {}",
+                    match t.align {
+                        compare::Align::Latency => "latency-aligned, s = (L_B − L_A) − (S_B − S_A)",
+                        compare::Align::SampleZero => "aligned at sample 0",
+                    },
+                    t.s,
+                    t.len_a,
+                    t.len_b,
+                    if t.raw_identical {
+                        "unaligned: bit-identical"
+                    } else {
+                        "unaligned: not identical"
+                    }
+                ));
+                if let Some((x, y)) = t.starts_differ {
+                    ui.label(format!("The starts differ ({x} and {y}): the hiss streams, the converter's phase and the coder's frame grid start at each render's own first sample, so the null has a floor from the setup"));
+                }
+                if let Some(at) = t.cut_at_skip {
+                    ui.label(format!("Cut at A's {at}: a live take's budget skip (silence that is not engine output)"));
+                }
+                if t.incomplete {
+                    ui.label("Incomplete take: its capture overflowed, it does not reproduce");
+                }
+                match &t.whole {
+                    None => {
+                        ui.label("No overlap: no figures");
+                    }
+                    Some(w) => {
+                        ui.label("The whole overlap:");
+                        for line in fmt_figures(w, rate) {
+                            ui.monospace(line);
+                        }
+                        match &t.prefix {
+                            None => {
+                                ui.label("Up to the first differing splice or muted region: the same as the overlap (the gate reports agree)");
+                            }
+                            Some(p) => {
+                                ui.label("Splices differ. Up to the first differing splice or muted region:");
+                                for line in fmt_figures(p, rate) {
+                                    ui.monospace(line);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ui.separator();
+        ui.strong("Spectral difference, B ÷ A");
+        match &c.spectral {
+            Err(e) => {
+                ui.label(e.to_string());
+            }
+            Ok(p) => {
+                ui.weak(format!("Welch, N {} (5 Hz bins), Hann, 50 % overlap, each side over its own runs (splices, muted regions and the latency excluded); frames A {}, B {}; drawn where both sides are within 120 dB of their own largest bin. A view of the workbench's own, not a transfer function.", p.original.n, p.original.frames, p.render.frames));
+                let pts = |s: &spectrum::Spectrum| -> Vec<[f64; 2]> {
+                    (1..s.power.len())
+                        .filter(|&k| s.power[k] > 0.0)
+                        .map(|k| [s.freq(k).log10(), s.db(k)])
+                        .collect()
+                };
+                Plot::new("cmp_spectra")
+                    .height(200.0)
+                    .legend(egui_plot::Legend::default())
+                    .x_axis_label("log10 Hz")
+                    .show(ui, |pu| {
+                        pu.line(Line::new("A", pts(&p.original)));
+                        pu.line(Line::new("B", pts(&p.render)));
+                    });
+                let ratio: Vec<[f64; 2]> = (1..p.original.power.len())
+                    .filter_map(|k| p.ratio_db(k).map(|d| [p.original.freq(k).log10(), d]))
+                    .collect();
+                Plot::new("cmp_ratio")
+                    .height(140.0)
+                    .x_axis_label("log10 Hz")
+                    .y_axis_label("dB")
+                    .show(ui, |pu| {
+                        pu.line(Line::new("B ÷ A", ratio));
+                    });
+            }
+        }
     }
 }
 

@@ -6,7 +6,7 @@ Split from 005 on 2026-11-03 (the coach's draft review C6). These are 005's draf
 - **The parameter diff (D6).** By identifier in manifest order, compared as engine readings (spec 025), not strings, so −0.0 equals 0.0 (C8). It also lists the rate, the seed, the input SHA-256, the channel, the start, the tail and the changes. Changes are compared as multisets of (clock, position, identifier, value, tag), listed as "A only" and "B only" in position order (C9).
 - **The null test (D7).**
   - Keep the raw bit-identity check: equal lengths, equal bits, and the count of differing samples (C13).
-  - When the latencies or starts differ, align B by (L_B − L_A) + (S_B − S_A), labelled "latency-aligned", with sample 0 as an option (C2, B4).
+  - When the latencies or starts differ, align B by (L_B − L_A) + (S_B − S_A) [superseded: the sign is −, spec 005b D3 and its Clarifications], labelled "latency-aligned", with sample 0 as an option (C2, B4).
   - Report the figures over two spans: up to the first differing gate event, and the whole common length; label "splices differ" in drop mode (B4).
   - f64 sequential sums; RMS in dB re RMS 1.0; null depth "A is silent" when RMS(A) = 0; the peak of |d| can reach +6 dBFS; the view labelled the workbench's own analysis (C13).
 - **The spectral difference (D8).**

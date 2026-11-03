@@ -34,6 +34,7 @@ fn fill_allocates_nothing() {
     let t = Takes {
         original: Arc::from(vec![0.25f32; 48_000]),
         render: Arc::from(vec![-0.25f32; 40_000]),
+        b: Arc::from(vec![0.5f32; 30_000]),
         rate_hz: 48_000,
     };
     let s = Shared::default();
@@ -42,11 +43,12 @@ fn fill_allocates_nothing() {
     let (a0, f0) = (ALLOCS.load(Ordering::SeqCst), FREES.load(Ordering::SeqCst));
     for k in 0..100_000u64 {
         if k % 97 == 0 {
+            // The three takes (spec 005b D5).
             s.request(
-                if k % 2 == 0 {
-                    Take::Render
-                } else {
-                    Take::Original
+                match k % 3 {
+                    0 => Take::Render,
+                    1 => Take::B,
+                    _ => Take::Original,
                 },
                 k % 30_000,
             );

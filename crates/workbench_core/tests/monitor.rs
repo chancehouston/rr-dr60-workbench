@@ -3,12 +3,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use workbench_core::monitor::{Shared, Take, Takes, fill};
+use workbench_core::monitor::{NO_REQUEST, Shared, Take, Takes, fill, pack, unpack};
 
 fn takes() -> Takes {
     Takes {
         original: Arc::from((0..10).map(|i| i as f32).collect::<Vec<_>>()),
         render: Arc::from((0..6).map(|i| -(i as f32)).collect::<Vec<_>>()),
+        b: Arc::from((0..4).map(|i| 100.0 + i as f32).collect::<Vec<_>>()),
         rate_hz: 6000,
     }
 }
@@ -56,4 +57,23 @@ fn a_mapped_request_adds_what_played_since() {
     fill(&t, &s, &mut l, &mut r);
     assert_eq!(l, [-3.0, -4.0]);
     assert_eq!(s.cursor(), (Take::Render, 5));
+}
+
+/// Spec 005b D5: the third take packs and plays.
+#[test]
+fn third_take_packs_and_plays() {
+    for t in [Take::Original, Take::Render, Take::B] {
+        for p in [0u64, 1, 12_345, (1 << 62) - 1] {
+            assert_eq!(unpack(pack(t, p)), (t, p));
+        }
+    }
+    assert_ne!(pack(Take::B, (1 << 62) - 1), NO_REQUEST);
+    let t = takes();
+    let sh = Shared::default();
+    sh.request(Take::B, 1);
+    sh.playing.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (mut l, mut r) = (vec![0.0; 5], vec![0.0; 5]);
+    fill(&t, &sh, &mut l, &mut r);
+    assert_eq!(l, [101.0, 102.0, 103.0, 0.0, 0.0]);
+    assert_eq!(sh.cursor(), (Take::B, 4));
 }

@@ -104,3 +104,44 @@ pub fn marks(r: &Render) -> Vec<Mark> {
         })
         .collect()
 }
+
+/// The input position of render position `o` (spec 005b D5): the render's start plus its map,
+/// clamped to the input. In `SameSeconds` it is input time: the start plus `o`.
+pub fn input_at(o: u64, r: &Render, mode: AbMode, input_len: u64) -> u64 {
+    // The take's own fed length first, then its start, then the input (hardware review Q10).
+    let own = input_len.saturating_sub(r.request.start);
+    (r.request.start + to_original(o, r, mode, own)).min(input_len)
+}
+
+/// The render position of input position `i` (spec 005b D5): the map of `i` less the render's
+/// start, at the render's start before it, clamped to its end.
+pub fn render_at(i: u64, r: &Render, mode: AbMode) -> u64 {
+    to_render(i.saturating_sub(r.request.start), r, mode)
+}
+
+/// The position in take `to` for position `pos` in take `from` (spec 005b D5): through the input,
+/// the original being the input itself. A render take that is absent maps to 0.
+pub fn switch(
+    from: crate::monitor::Take,
+    pos: u64,
+    to: crate::monitor::Take,
+    a: Option<&Render>,
+    b: Option<&Render>,
+    input_len: u64,
+    mode: AbMode,
+) -> u64 {
+    use crate::monitor::Take;
+    let of = |t: Take| match t {
+        Take::Original => None,
+        Take::Render => a,
+        Take::B => b,
+    };
+    let input = match from {
+        Take::Original => pos.min(input_len),
+        t => of(t).map_or(0, |r| input_at(pos, r, mode, input_len)),
+    };
+    match to {
+        Take::Original => input,
+        t => of(t).map_or(0, |r| render_at(input, r, mode)),
+    }
+}
