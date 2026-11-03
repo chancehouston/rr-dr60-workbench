@@ -1,7 +1,7 @@
 //! Processing records (spec 005): the run a recording keeps (D1), the record and its
 //! record-input file (D2), the read-out's flags and the settings diff (D3), and the re-render, a
 //! mirror of the engine's recipe (D4; the engine's Swift `ReRender.reRender` and `fill`, engine
-//! issue #76).
+//! issue #76, which waits for engine spec 027; the engine's 0.93 fixed its Swift restore, #77).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

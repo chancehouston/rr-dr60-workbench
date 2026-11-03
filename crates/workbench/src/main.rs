@@ -51,6 +51,8 @@ struct LiveRun {
     take: workbench_core::live::TakeBuilder,
     start_req: workbench_core::render::RenderRequest,
     reasons: Vec<Option<&'static str>>,
+    /// The engine's meter reach for the start's request (spec 008 D5).
+    meter_reach: [bool; 13],
 }
 
 /// A render running on its own thread.
@@ -203,6 +205,7 @@ impl Workbench {
         let reasons = (0..rr_dr60::controls::controls().len() as u32)
             .map(|i| workbench_core::live::live_reason(&req, i))
             .collect();
+        let meter_reach = workbench_core::render::meter_reach_for(&req).map_or([true; 13], |r| r.0);
         match workbench_core::live::LiveCore::new(&req, &list) {
             Ok((core, queues)) => {
                 let mut core = core;
@@ -215,6 +218,7 @@ impl Workbench {
                             take: workbench_core::live::TakeBuilder::default(),
                             start_req: req,
                             reasons,
+                            meter_reach,
                         });
                         self.messages.clear();
                     }
@@ -1523,6 +1527,13 @@ impl Workbench {
             ui.label("Tail").on_hover_text(text::TAIL_LABEL);
             ui.label(secs(r.tail_samples, rate));
             ui.end_row();
+            ui.label("Speech coder delay (inside the latency)");
+            ui.label(format!(
+                "{} ({} device-sample frames)",
+                secs(u64::from(r.codec_delay_samples), rate),
+                r.speech_codec.frame_samples
+            ));
+            ui.end_row();
             if r.gate_reached {
                 ui.label(if r.drop_mode {
                     text::SPLICES
@@ -1797,11 +1808,10 @@ impl Workbench {
             }
             // The latest 10 ms row, every field with 002's reach rule (D7, B13).
             if let Some(row) = run.take.rows.last() {
-                let route = workbench_core::meters::route_of(&run.start_req.engine_values);
                 egui::Grid::new("live meters").show(ui, |ui| {
-                    for f in &workbench_core::meters::FIELDS {
+                    for (i, f) in workbench_core::meters::FIELDS.iter().enumerate() {
                         ui.label(f.id);
-                        if workbench_core::meters::reached(f, &run.start_req.settings, route) {
+                        if run.meter_reach[i] {
                             let v = (f.get)(&row.meters);
                             ui.add(
                                 egui::ProgressBar::new((v as f32 / 2.0).clamp(0.0, 1.0))

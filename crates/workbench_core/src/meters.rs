@@ -1,11 +1,12 @@
 //! The meter timeline (spec 002 D1 – D4; research R-03).
 //!
 //! A render reads the engine's rest read-out, then the read-out after every 10 ms call. The
-//! field table below is the workbench's: identifiers, units, kinds and sides quoted from the
-//! engine's rustdoc at `a06318c` (`pipeline.rs:227-286`) until the engine publishes one
-//! (rr-dr60-emu#75). The `reached` rule is pinned by behavior in the tests.
+//! field table is the engine's (`rr_dr60::meters::FIELDS`, engine spec 026 D4; spec 008 D5):
+//! identifier, unit, kind and sentence. Reach and lag come from the render's own engine
+//! (the engine's `meter_reached` / `meter_lag_samples`). The workbench adds only the value
+//! accessors and the device-rate split of the input side.
 
-use rr_dr60::{Meters, Route, Settings, Tap};
+use rr_dr60::Meters;
 
 /// One row of the timeline: a read-out and its call's spans.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,183 +43,80 @@ pub enum Side {
     Output,
 }
 
-/// One meter field.
+/// One meter field: the engine's description with the workbench's accessor.
 #[derive(Clone, Copy, Debug)]
 pub struct MeterField {
     /// The engine's field identifier.
     pub id: &'static str,
-    /// The unit as shown.
+    /// The engine's unit.
     pub unit: &'static str,
-    /// Max, count or state.
+    /// Max, count or state (the engine's kind).
     pub kind: Kind,
-    /// Its clock.
+    /// Its clock: the engine's side, the input side split at the device-rate points.
     pub side: Side,
-    /// A workbench note from the engine's rustdoc (labelled as such on screen).
+    /// The engine's sentence.
     pub note: &'static str,
     /// The value as f64.
     pub get: fn(&Meters) -> f64,
 }
 
-/// The thirteen fields at the pin, in the engine's declaration order.
-pub const FIELDS: [MeterField; 13] = [
-    MeterField {
-        id: "input_peak",
-        unit: "sample peak",
-        kind: Kind::Max,
-        side: Side::Input,
-        note: "the largest absolute input sample after sanitizing",
-        get: |m| f64::from(m.input_peak),
-    },
-    MeterField {
-        id: "limiter_input_peak",
-        unit: "sample peak",
-        kind: Kind::Max,
-        side: Side::Input,
-        note: "the largest absolute sample entering stage 3 (after stages 1 – 2 and the slot; at after_mic_amp: stage 2's output, before the slot)",
-        get: |m| f64::from(m.limiter_input_peak),
-    },
-    MeterField {
-        id: "gain_reduction_db",
-        unit: "dB",
-        kind: Kind::Max,
-        side: Side::Input,
-        note: "the deepest attenuation the limiter applied in the call",
-        get: |m| f64::from(m.gain_reduction_db),
-    },
-    MeterField {
-        id: "hold_charge",
-        unit: "fraction of the 40 dB hold",
-        kind: Kind::State,
-        side: Side::Input,
-        note: "the limiter's hold at the call's end (0.13 unity floor, 0.73 1 dB, 0.84 10 dB, 0.90 20 dB)",
-        get: |m| f64::from(m.hold_charge),
-    },
-    MeterField {
-        id: "record_filter_peak",
-        unit: "sample peak",
-        kind: Kind::Max,
-        side: Side::Device,
-        note: "the largest device sample after stage 4's band-limit, before the converter's clamp",
-        get: |m| f64::from(m.record_filter_peak),
-    },
-    MeterField {
-        id: "adc_clamp_count",
-        unit: "device samples per call",
-        kind: Kind::Count,
-        side: Side::Device,
-        note: "the device samples the converter's full-scale clamp changed",
-        get: |m| f64::from(m.adc_clamp_count),
-    },
-    MeterField {
-        id: "vas_paused",
-        unit: "paused (1) or recording (0)",
-        kind: Kind::State,
-        side: Side::Device,
-        note: "the voice activation's state at the call's end",
-        get: |m| if m.vas_paused { 1.0 } else { 0.0 },
-    },
-    MeterField {
-        id: "hang_remaining_samples",
-        unit: "device samples (6 kHz)",
-        kind: Kind::State,
-        side: Side::Device,
-        note: "the non-sound device samples the gate keeps before pausing",
-        get: |m| m.hang_remaining_samples as f64,
-    },
-    MeterField {
-        id: "reconstruction_peak",
-        unit: "sample peak",
-        kind: Kind::Max,
-        side: Side::Output,
-        note: "the largest host sample after stage 10 and the conversion, before the output chain",
-        get: |m| f64::from(m.reconstruction_peak),
-    },
-    MeterField {
-        id: "route_peak",
-        unit: "sample peak re the route's scale",
-        kind: Kind::Max,
-        side: Side::Output,
-        note: "the largest sample at the route's output before the optional clamp (1.0: the speaker's clip ceiling or the earphone scale)",
-        get: |m| f64::from(m.route_peak),
-    },
-    MeterField {
-        id: "output_clamp_count",
-        unit: "host samples per call",
-        kind: Kind::Count,
-        side: Side::Output,
-        note: "the host samples the optional output clamp bounded (an emulator option)",
-        get: |m| f64::from(m.output_clamp_count),
-    },
-    MeterField {
-        id: "amp_clip_count",
-        unit: "host samples per call",
-        kind: Kind::Count,
-        side: Side::Output,
-        note: "the host samples the speaker amplifier's knee or ceiling changed",
-        get: |m| f64::from(m.amp_clip_count),
-    },
-    MeterField {
-        id: "battery_ceiling",
-        unit: "factor (1.0 at 3.0 V)",
-        kind: Kind::State,
-        side: Side::Output,
-        note: "the battery's ceiling factor in force at the call's end",
-        get: |m| f64::from(m.battery_ceiling),
-    },
-];
-
-/// The taps before the gate's device-rate stages (no conversion runs).
-fn front(t: Tap) -> bool {
-    matches!(
-        t,
-        Tap::AfterAgc | Tap::AfterMicCapsule | Tap::AfterMicAmp | Tap::AfterInsert
-    )
-}
-
-/// The taps after stage 10 (the engine's `is_after_stage_10`, `settings.rs:109-117`).
-fn after_stage_10(t: Tap) -> bool {
-    matches!(
-        t,
-        Tap::AfterPlayback
-            | Tap::RouteOutput
-            | Tap::AfterVolumeAmp
-            | Tap::AfterSpeaker
-            | Tap::AfterEarphone
-    )
-}
-
-/// Whether the configuration reaches a field's point (D4): the engine's documented rules
-/// (`pipeline.rs:227-286`), pinned by behavior (`meter_reach_pinned`); rr-dr60-emu#75 asks for
-/// the engine to publish them.
-pub fn reached(field: &MeterField, s: &Settings, route: Route) -> bool {
-    let t = s.tap;
-    match field.id {
-        "input_peak" | "battery_ceiling" => true,
-        "limiter_input_peak" => t != Tap::AfterMicCapsule,
-        "gain_reduction_db" | "hold_charge" => {
-            s.agc.enabled
-                && !matches!(
-                    t,
-                    Tap::AfterMicCapsule | Tap::AfterMicAmp | Tap::AfterInsert
-                )
-        }
-        "record_filter_peak" => !front(t),
-        "adc_clamp_count" => !front(t) && s.adc_clamp_enabled,
-        "vas_paused" | "hang_remaining_samples" => crate::render::gate_reached(s),
-        "reconstruction_peak" => after_stage_10(t),
-        "route_peak" => t == Tap::RouteOutput,
-        "output_clamp_count" => t == Tap::RouteOutput && s.output.clamp_enabled,
-        "amp_clip_count" => {
-            route == Route::Speaker
-                && s.output.volume_amp_enabled
-                && matches!(
-                    t,
-                    Tap::RouteOutput | Tap::AfterVolumeAmp | Tap::AfterSpeaker
-                )
-        }
-        _ => true,
+const fn kind_of(k: rr_dr60::meters::MeterKind) -> Kind {
+    match k {
+        rr_dr60::meters::MeterKind::Maximum => Kind::Max,
+        rr_dr60::meters::MeterKind::Count => Kind::Count,
+        _ => Kind::State,
     }
 }
+
+/// The device-rate points (stages 4 – 5), the input-side fields whose record-call lag is the
+/// record path's latency to the encoder rather than 0. Pinned against the engine's
+/// `meter_lag_samples` at seven rates (`tests/meters.rs`).
+const DEVICE_POINTS: [usize; 4] = [4, 5, 6, 7];
+
+const fn side_of(i: usize) -> Side {
+    match rr_dr60::meters::FIELDS[i].side {
+        rr_dr60::meters::MeterSide::Output => Side::Output,
+        _ => {
+            let mut k = 0;
+            while k < DEVICE_POINTS.len() {
+                if DEVICE_POINTS[k] == i {
+                    return Side::Device;
+                }
+                k += 1;
+            }
+            Side::Input
+        }
+    }
+}
+
+const fn field(i: usize, get: fn(&Meters) -> f64) -> MeterField {
+    let e = &rr_dr60::meters::FIELDS[i];
+    MeterField {
+        id: e.identifier,
+        unit: e.unit,
+        kind: kind_of(e.kind),
+        side: side_of(i),
+        note: e.sentence,
+        get,
+    }
+}
+
+/// The thirteen fields, in the engine's declaration order.
+pub const FIELDS: [MeterField; 13] = [
+    field(0, |m| f64::from(m.input_peak)),
+    field(1, |m| f64::from(m.limiter_input_peak)),
+    field(2, |m| f64::from(m.gain_reduction_db)),
+    field(3, |m| f64::from(m.hold_charge)),
+    field(4, |m| f64::from(m.record_filter_peak)),
+    field(5, |m| f64::from(m.adc_clamp_count)),
+    field(6, |m| if m.vas_paused { 1.0 } else { 0.0 }),
+    field(7, |m| m.hang_remaining_samples as f64),
+    field(8, |m| f64::from(m.reconstruction_peak)),
+    field(9, |m| f64::from(m.route_peak)),
+    field(10, |m| f64::from(m.output_clamp_count)),
+    field(11, |m| f64::from(m.amp_clip_count)),
+    field(12, |m| f64::from(m.battery_ceiling)),
+];
 
 /// The engine's meter field names, read from its `Debug` output (the struct is
 /// `#[non_exhaustive]`, so the workbench cannot destructure it).
@@ -232,30 +130,6 @@ pub fn engine_field_names(m: &Meters) -> Vec<String> {
         .filter_map(|kv| kv.split_once(':').map(|(k, _)| k.trim().to_owned()))
         .filter(|k| !k.is_empty())
         .collect()
-}
-
-/// The route among a request's engine values (the route is a live control, not a setting).
-pub fn route_of(engine_values: &[(u32, rr_dr60::control_map::ControlReading)]) -> Route {
-    let Some((idx, entry)) = rr_dr60::controls::controls()
-        .iter()
-        .enumerate()
-        .find(|(_, e)| e.identifier == "route")
-    else {
-        return Route::Speaker;
-    };
-    let earphone = match entry.value {
-        rr_dr60::controls::ControlValue::Choice { options, .. } => options
-            .iter()
-            .find(|o| o.identifier == "earphone")
-            .map(|o| o.value),
-        _ => None,
-    };
-    match engine_values.iter().find(|(i, _)| *i == idx as u32) {
-        Some((_, rr_dr60::control_map::ControlReading::Choice(v))) if Some(*v) == earphone => {
-            Route::Earphone
-        }
-        _ => Route::Speaker,
-    }
 }
 
 /// Where a row's figure sits on the original's clock (D3; post-implementation review B1): the
@@ -274,15 +148,7 @@ pub fn placed_span(
             if o1 <= o0 {
                 return None;
             }
-            let to_in = |o: u64| {
-                rr_dr60::timeline::onepass_output_to_input(
-                    o,
-                    r.latency_samples,
-                    &r.events,
-                    r.drop_mode,
-                )
-                .0
-            };
+            let to_in = |o: u64| crate::render::output_to_input(o, r).0;
             Some((to_in(o0), to_in(o1 - 1) + 1))
         }
         _ => (row.in_span.1 > row.in_span.0).then_some(row.in_span),
@@ -300,16 +166,33 @@ pub fn plot_points(field: &MeterField, r: &crate::render::Render) -> Vec<[f64; 2
     }
     let marks = crate::ab::marks(r);
     let mut prev_end: Option<u64> = None;
+    let mut prev_out = 0u64;
     for row in r.meters.iter().skip(1) {
         let Some((s, e)) = placed_span(row, field, r) else {
             continue;
         };
-        if let Some(pe) = prev_end
+        // A break where a mark's output position falls after the previous plotted call's
+        // output and up to this call's end (spec 008 D6: with the coder on, the splice reaches
+        // the output inside the call that resumes, after the held coder delay).
+        let out_end = if field.side == Side::Output {
+            row.out_span.1
+        } else {
+            0
+        };
+        let by_output = field.side == Side::Output
             && marks
                 .iter()
-                .any(|m| m.input_span.0 >= pe && m.input_span.0 < s.max(pe + 1))
+                .any(|m| m.output_position >= prev_out && m.output_position < out_end);
+        if let Some(pe) = prev_end
+            && (by_output
+                || marks
+                    .iter()
+                    .any(|m| m.input_span.0 >= pe && m.input_span.0 < s.max(pe + 1)))
         {
             pts.push([pe as f64 / rate, f64::NAN]);
+        }
+        if field.side == Side::Output {
+            prev_out = row.out_span.1;
         }
         let v = (field.get)(&row.meters);
         if field.kind == Kind::State {
@@ -340,7 +223,7 @@ pub fn display(field: &MeterField, row: &MeterRow, rate: u32) -> String {
                 if n > 0.0 { 100.0 * v / n } else { 0.0 }
             )
         }
-        (_, Kind::Max) if field.unit.starts_with("sample peak") => {
+        (_, Kind::Max) if field.unit.starts_with("full scale") => {
             format!("{v:.4} ({:.2} dBFS)", 20.0 * v.max(1e-12).log10())
         }
         _ => format!("{v:.4}"),

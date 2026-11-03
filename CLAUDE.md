@@ -89,6 +89,11 @@ Guidance for Claude Code working in this repository. Keep it current.
     - Report a check's verdicts, not only its data.
   - Figures in `specs/006-coverage-close-out/records.md`. Next: the owner's desk checklists; the follow-ups in the records of 005 – 007; engine issues #72 – #79.
 
+- 2026-11-03: **Feature 008 (the engine 0.93 adoption) is merged** (under the autopilot rule; the PR and merge commit in `specs/008-engine-0-93/records.md`). The engine pin moves to `3890bfe` (0.93.0). The engine's 026 host reads replace the workbench's mirrors of #72 – #75, #78 and #79: the gate rule, the tail (now the one-pass drain), the wording lists, the meter table, reach and lag, the reports' latency, and the stage labels. Reach is **74/74**, with 197 tests.
+  - **Findings**: the old tail was the player's drain (and 0 at the front taps); the maps counted a splice the coder's delay early with the coder on in drop mode. Both are fixed (the 005b follow-up is closed). Engine issues #82 and #83 are filed.
+  - The reviews ran inline (a forked worker); an independent coach and hardware pass is a follow-up.
+  - #76 waits for engine spec 027.
+
 ## Lessons (004b)
 
 - Live commands scheduled at the top of a callback sit on a call boundary before that call's list entries, so the order the engine receives changes is already position order. A test that ties commands with list entries is what pins it.

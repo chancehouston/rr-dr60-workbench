@@ -1,9 +1,9 @@
-//! Spec 001 T010 [TR: FR-009]: the readings, and the gate rule pinned by behavior.
+//! Spec 001 T010 [TR: FR-009]: the readings, and the engine's gate rule (spec 008 D2:
+//! `Settings::one_pass_vas_runs`) checked against its behavior.
 
 mod support;
 
 use support::*;
-use workbench_core::render::gate_reached;
 
 /// Every tap, from the engine's tap control (so a new tap is covered without a change here).
 fn taps() -> Vec<&'static str> {
@@ -36,10 +36,10 @@ fn gate_predicate_pinned() {
             let shorter = r.not_emitted > 0;
             assert_eq!(
                 shorter,
-                gate_reached(&req.settings),
-                "{tap} enabled={enabled}: the quoted rule disagrees with the engine's behavior"
+                req.settings.one_pass_vas_runs(),
+                "{tap} enabled={enabled}: the engine's rule disagrees with its behavior"
             );
-            assert_eq!(r.gate_reached, gate_reached(&req.settings));
+            assert_eq!(r.gate_reached, req.settings.one_pass_vas_runs());
         }
     }
 }

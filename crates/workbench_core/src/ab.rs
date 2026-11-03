@@ -1,8 +1,9 @@
 //! The A/B position map (spec 001 D6, FR-010; research R-06).
 //!
-//! Render → original is the engine's `timeline::onepass_output_to_input`. Original → render
-//! inverts it by binary search on the unclamped key `o + removed(o)`, which is strictly
-//! increasing in `o`, so input 0 maps to the latency and not to 0.
+//! Render → original is the engine's `timeline::onepass_output_to_input` on the gate reports'
+//! clock (`render::output_to_input`, spec 008 D6). Original → render inverts it by binary search
+//! on the unclamped key `o + removed(o − C)` (C the coder's delay inside the latency), which is
+//! strictly increasing in `o`, so input 0 maps to the latency and not to 0.
 
 use rr_dr60::VasEvent;
 
@@ -37,13 +38,34 @@ pub fn to_render(i: u64, r: &Render, mode: AbMode) -> u64 {
     if mode == AbMode::SameSeconds {
         return i.min(len);
     }
-    to_render_raw(i, u64::from(r.latency_samples), &r.events, r.drop_mode, len)
+    to_render_raw(
+        i,
+        u64::from(r.latency_samples),
+        u64::from(r.codec_delay_samples),
+        &r.events,
+        r.drop_mode,
+        len,
+    )
 }
 
-/// [`to_render`] on raw parts (the tests' entry point).
-pub fn to_render_raw(i: u64, latency: u64, events: &[VasEvent], drop: bool, len: u64) -> u64 {
+/// [`to_render`] on raw parts (the tests' entry point): `codec` is the coder's delay inside
+/// `latency` (the reports' positions exclude it).
+pub fn to_render_raw(
+    i: u64,
+    latency: u64,
+    codec: u64,
+    events: &[VasEvent],
+    drop: bool,
+    len: u64,
+) -> u64 {
     let target = i + latency;
-    let key = |o: u64| o + removed(o, events, drop);
+    let key = |o: u64| {
+        o + if o >= codec {
+            removed(o - codec, events, drop)
+        } else {
+            0
+        }
+    };
     // Smallest o in [0, len) with key(o) ≥ target; len when none (a final pause, or past the end).
     let (mut lo, mut hi) = (0u64, len);
     while lo < hi {
@@ -62,8 +84,7 @@ pub fn to_original(o: u64, r: &Render, mode: AbMode, input_len: u64) -> u64 {
     if mode == AbMode::SameSeconds {
         return o.min(input_len);
     }
-    let (i, _) =
-        rr_dr60::timeline::onepass_output_to_input(o, r.latency_samples, &r.events, r.drop_mode);
+    let (i, _) = crate::render::output_to_input(o, r);
     i.min(input_len)
 }
 
@@ -78,9 +99,12 @@ pub struct Mark {
     pub removed: bool,
 }
 
-/// The render's marks, from its reports and the engine's map.
+/// The render's marks, from its reports and the engine's map on the reports' clock (spec 008
+/// D6): a report's position excludes the coder's delay `C`, so its splice reaches the output at
+/// the position + `C`, and its input span starts at the position less the latency less `C`.
 pub fn marks(r: &Render) -> Vec<Mark> {
-    let l = u64::from(r.latency_samples);
+    let c = u64::from(r.codec_delay_samples);
+    let l = u64::from(r.latency_samples).saturating_sub(c);
     let mut before = 0u64;
     r.events
         .iter()
@@ -89,14 +113,14 @@ pub fn marks(r: &Render) -> Vec<Mark> {
                 let start = (e.output_position + before).saturating_sub(l);
                 before += e.input_length;
                 Mark {
-                    output_position: e.output_position,
+                    output_position: e.output_position + c,
                     input_span: (start, start + e.input_length),
                     removed: true,
                 }
             } else {
                 let start = e.output_position.saturating_sub(l);
                 Mark {
-                    output_position: e.output_position,
+                    output_position: e.output_position + c,
                     input_span: (start, start + e.input_length),
                     removed: false,
                 }

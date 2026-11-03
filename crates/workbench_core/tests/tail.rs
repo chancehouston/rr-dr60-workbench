@@ -1,5 +1,5 @@
-//! Spec 001 T009 [TR: D7, P12]: the tail brings every input sample out, a longer tail changes
-//! nothing before it, and the tail is 0 where the engine's latency is 0.
+//! Spec 001 T009 [TR: D7, P12]: the tail brings every input sample out and a longer tail changes
+//! nothing before it; since spec 008 D3 the tail is the engine's one-pass drain.
 
 mod support;
 
@@ -149,18 +149,46 @@ fn reported_high_q_filter_ring() {
     println!("high-Q band filter: peak after the tail {extra:e} ({db:.1} dBFS)");
 }
 
+/// Spec 008 D3: the tail is the engine's one-pass drain at every tap. At the front taps it is
+/// the settle of the stages that run: 0 at the capsule's tap, stage 2's (498 at 48 kHz) after
+/// it, where the old rule ("0 where the latency is 0") emitted no tail although stage 2 and the
+/// slot still ring.
 #[test]
-fn tail_zero_at_front_taps() {
+fn tail_is_the_engines_drain() {
     let x = tone(48000, 0.1, 0.5);
     for tap in [
-        "after_agc",
         "after_mic_capsule",
         "after_mic_amp",
         "after_insert",
+        "after_agc",
+        "after_record",
+        "route_output",
     ] {
-        let r = run(&request(48000, &x, |p| set_choice(p, "tap", tap)));
-        assert_eq!(r.latency_samples, 0, "{tap}");
-        assert_eq!(r.tail_samples, 0, "{tap}");
-        assert_eq!(r.samples.len(), x.len(), "{tap}: the identity length");
+        let req = request(48000, &x, |p| set_choice(p, "tap", tap));
+        let r = run(&req);
+        let p = workbench_core::render::fresh_engine(&req).unwrap();
+        assert_eq!(
+            r.tail_samples,
+            u64::from(p.one_pass_drain_samples()),
+            "{tap}"
+        );
+        if matches!(
+            tap,
+            "after_mic_capsule" | "after_mic_amp" | "after_insert" | "after_agc"
+        ) {
+            assert_eq!(r.latency_samples, 0, "{tap}");
+            assert_eq!(
+                r.samples.len() as u64,
+                x.len() as u64 + r.tail_samples,
+                "{tap}: no gate, every sample out"
+            );
+        }
     }
+    let at = |tap: &str| run(&request(48000, &x, |p| set_choice(p, "tap", tap))).tail_samples;
+    assert_eq!(at("after_mic_capsule"), 0);
+    assert_eq!(
+        at("after_mic_amp"),
+        498,
+        "stage 2's settle (the engine's figure)"
+    );
 }

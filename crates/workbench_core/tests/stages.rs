@@ -17,6 +17,10 @@ fn stages_verbatim() {
         assert_eq!(get("model version"), e.model_version);
         assert_eq!(get("sources"), e.sources.join(", "));
         assert_eq!(get("assumptions"), e.assumptions.join(", "));
+        // Spec 008 D7: the engine's labels, never the enum's Debug name.
+        assert_eq!(get("status"), e.status.label());
+        assert_eq!(get("path"), e.path.label());
+        assert_eq!(get("confidence"), e.confidence.label());
         for c in stages::controls_of(e.number) {
             assert_eq!(c.stage, e.number);
         }

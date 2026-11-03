@@ -113,7 +113,8 @@ fn the_tail_switch_survives_a_front_tap() {
     stereo(&a, 16000);
     let mut s = Session::new();
     s.open(&a, Channel::Index(0)).unwrap();
-    set_choice(s.panel_mut().unwrap(), "tap", "after_agc");
+    // The capsule's tap: the engine's drain there is 0 (spec 008 D3).
+    set_choice(s.panel_mut().unwrap(), "tap", "after_mic_capsule");
     render_now(&mut s);
     assert_eq!(s.render().unwrap().tail_samples, 0);
     let text = sidecar::write(s.render().unwrap());
