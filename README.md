@@ -30,7 +30,15 @@ assumptions; nothing has been checked against a real unit (see the engine's READ
 - **Stages**: the engine's stage manifest, verbatim.
 - **CSV exports**: each with the render's sidecar beside it.
 
-Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): the live engine, the record and play paths, processing records and comparisons.
+**Feature 003, the live engine:**
+
+- **Live**: the engine runs inside the output callback on a file.
+- **Live controls**: changes take effect at once; the controls the one-pass refuses are disabled with the engine's own reason.
+- **Scheduled changes**: listed changes land on their exact sample.
+- **The timeline**: the change log, the gate's reports and the skips.
+- **Reproduction**: every live take reproduces bit for bit from its version-2 sidecar.
+
+Next, in the order of [docs/workbench-plan.md](docs/workbench-plan.md): the record and play paths, processing records and comparisons, and the microphone (007).
 
 ## Build and run
 

@@ -10,6 +10,7 @@ pub mod analysis;
 pub mod csv;
 pub mod export;
 pub mod input;
+pub mod live;
 pub mod meters;
 pub mod monitor;
 pub mod panel;

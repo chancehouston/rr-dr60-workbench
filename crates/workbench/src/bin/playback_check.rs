@@ -34,4 +34,44 @@ fn main() {
         );
         drop(p);
     }
+    live_check();
+}
+
+/// The live path (spec 003): a fresh engine on silence (the capsule off, so nothing is audible)
+/// in the output callback for half a second; the engine's produced count must advance.
+fn live_check() {
+    use std::sync::atomic::Ordering;
+    let rate = 48000u32;
+    let mut panel = workbench_core::panel::Panel::new(rate).unwrap();
+    let i = panel.index_of("mic.capsule_enabled").unwrap();
+    panel.set(i, rr_dr60::control_map::ControlReading::Switch(false));
+    let samples: Arc<[f32]> = Arc::from(vec![0.0f32; rate as usize * 2]);
+    let (settings, engine_values) = panel.snapshot();
+    let sha = workbench_core::input::samples_sha256(&samples);
+    let req = workbench_core::render::RenderRequest {
+        input: samples,
+        input_sha256: sha,
+        file_name: "silence".into(),
+        frames: u64::from(rate) * 2,
+        raw_sha256: sha,
+        rate_hz: rate,
+        channel: workbench_core::input::Channel::Index(0),
+        settings,
+        engine_values,
+        tail: false,
+        block: workbench_core::render::block_for(rate),
+        start: 0,
+        len: None,
+        changes: Vec::new(),
+    };
+    let (core, q) = workbench_core::live::LiveCore::new(&req, &[]).unwrap();
+    let p = playback::Playback::start_live(rate, Arc::new(Shared::default()), core)
+        .expect("live start");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    println!(
+        "live at {rate} Hz: the engine produced {} samples in 0.5 s (about {}), overloads 0 expected, device lost {}",
+        q.state.produced.load(Ordering::Relaxed),
+        rate / 2,
+        p.device_lost()
+    );
 }

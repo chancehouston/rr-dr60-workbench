@@ -108,15 +108,23 @@ fn sample_text() -> (String, workbench_core::input::Input) {
 fn grammar() {
     let (text, _) = sample_text();
     assert!(sidecar::read(&text).is_ok());
-    assert!(text.starts_with("rr-dr60-workbench sidecar 1\n"));
+    assert!(text.starts_with("rr-dr60-workbench sidecar 2\n"));
+    // Version 1 is still read: drop the version-2 keys and change the magic line.
+    let v1: String = text
+        .replacen("sidecar 2", "sidecar 1", 1)
+        .lines()
+        .filter(|l| !l.starts_with("live ") && !l.starts_with("start ") && !l.starts_with("fed "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(sidecar::read(&v1).unwrap().version, 1, "v1_still_read");
     assert_eq!(
         sidecar::read("hello\n").unwrap_err(),
         SidecarError::NotASidecar
     );
-    let v2 = text.replacen("sidecar 1", "sidecar 2", 1);
+    let v3 = text.replacen("sidecar 2", "sidecar 3", 1);
     assert_eq!(
-        sidecar::read(&v2).unwrap_err(),
-        SidecarError::UnsupportedVersion("2".into())
+        sidecar::read(&v3).unwrap_err(),
+        SidecarError::UnsupportedVersion("3".into())
     );
     let dup = format!("{text}block 4096\n");
     assert!(matches!(

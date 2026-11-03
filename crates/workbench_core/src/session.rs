@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::input::{self, Channel, Input, OpenError};
 use crate::panel::Panel;
-use crate::render::{Render, RenderRequest};
+use crate::render::{Render, RenderRequest, Scheduled};
 use crate::sidecar::{self, RestoreReport, SidecarError};
 
 /// The session's state.
@@ -17,6 +17,10 @@ pub struct Session {
     panel: Option<Panel>,
     tail: bool,
     render: Option<Render>,
+    /// A restored live take's range and changes (spec 003 D5): `(start, fed, changes)`.
+    range: Option<(u64, u64, Vec<Scheduled>)>,
+    /// A live take's values at the stop: its staleness is judged against them (plan review B2).
+    live_end: Option<RenderRequest>,
 }
 
 /// A comparable summary of a session (the "session unchanged" tests).
@@ -94,6 +98,8 @@ impl Session {
             self.panel =
                 Some(Panel::new(inp.rate_hz).map_err(|e| OpenError::Decode(e.to_string()))?);
             self.render = None;
+            self.range = None;
+            self.live_end = None;
         }
         self.path = Some(path.to_path_buf());
         self.input = Some(inp);
@@ -102,6 +108,17 @@ impl Session {
 
     /// The render request for the current input and panel.
     pub fn request(&self) -> Option<RenderRequest> {
+        let mut r = self.plain_request()?;
+        if let Some((start, fed, changes)) = &self.range {
+            r.start = *start;
+            r.len = Some(*fed);
+            r.changes = changes.clone();
+        }
+        Some(r)
+    }
+
+    /// The request without a restored range (a live run's start, or a whole-file render).
+    pub fn plain_request(&self) -> Option<RenderRequest> {
         Some(RenderRequest::new(
             self.input.as_ref()?,
             self.panel.as_ref()?,
@@ -109,9 +126,32 @@ impl Session {
         ))
     }
 
+    /// Drops a restored live range, so renders cover the whole file again.
+    pub fn clear_range(&mut self) {
+        self.range = None;
+    }
+
+    /// The restored live range, if any.
+    pub fn range(&self) -> Option<&(u64, u64, Vec<Scheduled>)> {
+        self.range.as_ref()
+    }
+
+    /// Accepts a finished live take (spec 003 D5) with the panel's request at the stop, against
+    /// which its staleness is judged.
+    pub fn accept_live(&mut self, take: Render, at_stop: RenderRequest) -> bool {
+        let ok = self.accept_render(take);
+        if ok {
+            self.live_end = Some(at_stop);
+        }
+        ok
+    }
+
     /// True when the current render was made from other values or another input (D5).
     pub fn is_stale(&self) -> bool {
         match (&self.render, self.request()) {
+            (Some(_), Some(q)) if self.live_end.is_some() => {
+                self.live_end.as_ref().is_some_and(|e| e.differs(&q))
+            }
             (Some(r), Some(q)) => r.is_stale(&q),
             _ => false,
         }
@@ -124,6 +164,7 @@ impl Session {
         let same_file = r.request.raw_sha256 == inp.raw_sha256 && r.request.rate_hz == inp.rate_hz;
         if same_file {
             self.render = Some(r);
+            self.live_end = None;
         }
         same_file
     }
@@ -157,6 +198,37 @@ impl Session {
         let panel = self.panel.as_mut().expect("a panel with an input");
         let rep = sidecar::restore(&s, panel, inp);
         self.tail = rep.tail;
+        // A live take's range and changes (version 2, `live yes`).
+        self.range = None;
+        if s.version >= 2 && s.fields.get("live").map(String::as_str) == Some("yes") {
+            let start = s
+                .fields
+                .get("start")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let fed = s
+                .fields
+                .get("fed")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let changes = s
+                .changes
+                .iter()
+                .filter_map(|(clock, position, id, value, tag)| {
+                    let control = rr_dr60::controls::controls()
+                        .iter()
+                        .position(|e| e.identifier == id)? as u32;
+                    Some(Scheduled {
+                        clock: *clock,
+                        position: *position,
+                        control,
+                        value: *value,
+                        tag: *tag,
+                    })
+                })
+                .collect();
+            self.range = Some((start, fed, changes));
+        }
         Ok(rep)
     }
 

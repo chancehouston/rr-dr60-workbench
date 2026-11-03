@@ -480,6 +480,9 @@ pub fn request(
         engine_values,
         tail: true,
         block: workbench_core::render::block_for(rate),
+        start: 0,
+        len: None,
+        changes: Vec::new(),
     }
 }
 
