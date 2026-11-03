@@ -117,7 +117,7 @@ description: "Tasks for feature 001, the offline render session"
 
 ### Tests (write first; they must fail)
 
-- [ ] T020 [P] [US2] `core/tests/panel.rs` [TR: FR-004, SC-003, US2 AS1; FR-005, US2 AS5; FR-006, US2 AS3, AS4; US2 AS2, AS6; US2 AS7]:
+- [X] T020 [P] [US2] `core/tests/panel.rs` [TR: FR-004, SC-003, US2 AS1; FR-005, US2 AS5; FR-006, US2 AS3, AS4; US2 AS2, AS6; US2 AS7]:
   - `presents_every_control`: every field of FR-004, for all 36 entries.
   - `grows_with_the_engine`: a copied entry list with one entry appended and one mutated appears with no other change.
   - `not_on_the_one_pass_and_read_only`.
@@ -131,7 +131,7 @@ description: "Tasks for feature 001, the offline render session"
 
 ### Implementation
 
-- [ ] T021 [US2] Implement `Panel::set`, `reset_to_defaults`, `renderable` and the check order of R-08 in `core/src/panel.rs`:
+- [X] T021 [US2] Implement `Panel::set`, `reset_to_defaults`, `renderable` and the check order of R-08 in `core/src/panel.rs`:
   1. `validate` on the defaults plus the one value;
   2. `validate` on the whole settings;
   3. `reconfigure` on the check engine;
@@ -139,7 +139,7 @@ description: "Tasks for feature 001, the offline render session"
   5. the zero-length `process` for the tap and the route.
 
   Map each refusal to its row (using `setting_control` where the engine names a field), and to both rows for the tap and the route. Make T020 pass.
-- [ ] T022 [US2] Implement staleness in `core/src/render.rs` or the session type: a render is stale when the panel snapshot, the channel, `input_sha256` or the tail choice differ from `render.request` (D5).
+- [X] T022 [US2] Implement staleness in `core/src/render.rs` or the session type: a render is stale when the panel snapshot, the channel, `input_sha256` or the tail choice differ from `render.request` (D5).
 - [ ] T023 [US2] Build the panel view in `app/src/main.rs`:
   - stage groups in manifest order;
   - an editor per value type: a switch toggle, an integer field, a continuous drag or field showing the unit, a choice drop-down of the options;
@@ -157,12 +157,12 @@ description: "Tasks for feature 001, the offline render session"
 
 ### Tests (write first; they must fail)
 
-- [ ] T024 [P] [US3] `core/tests/export.rs` [TR: FR-012, US3 AS1; SC-006 overwrite]:
+- [X] T024 [P] [US3] `core/tests/export.rs` [TR: FR-012, US3 AS1; SC-006 overwrite]:
   - `roundtrip`: read back with hound, bit-equal; the header is tag 0xFFFE with the IEEE-float GUID.
   - `failure_leaves_no_pair`: an injected `ExportFs` failure at each step (both creates, both writes, both renames) leaves neither a new pair nor a mixed pair.
   - `refuses_oversize`: data above `u32::MAX − 60` bytes, checked by arithmetic, not by writing.
   - `overwrite_replaces_the_pair`.
-- [ ] T025 [P] [US3] `core/tests/sidecar.rs` [TR: FR-013; FR-014, SC-002, US3 AS2 – AS5]:
+- [X] T025 [P] [US3] `core/tests/sidecar.rs` [TR: FR-013; FR-014, SC-002, US3 AS2 – AS5]:
   - `values_roundtrip`: every value type, −0.0 → 0.0, and every range's ends.
   - `grammar`: every rule of [contracts/sidecar-v1.md](contracts/sidecar-v1.md); a duplicate key, an unknown key, a decimal disagreeing with its bits, or a bad first line → refused.
   - `reproduces`: at seven rates, export, then a fresh session (open, restore, render) gives equal samples and an equal `render.sha256`.
@@ -171,8 +171,8 @@ description: "Tasks for feature 001, the offline render session"
 
 ### Implementation
 
-- [ ] T026 [US3] Implement `core/src/sidecar.rs`: `write`, `read` and `restore` per the contract. Values are written as read back. The slot is restored before its parameters. `host_rate_hz` is never applied. Restoring gives a `RestoreReport`. Make T025's grammar and values tests pass.
-- [ ] T027 [US3] Implement `core/src/export.rs`:
+- [X] T026 [US3] Implement `core/src/sidecar.rs`: `write`, `read` and `restore` per the contract. Values are written as read back. The slot is restored before its parameters. `host_rate_hz` is never applied. Restoring gives a `RestoreReport`. Make T025's grammar and values tests pass.
+- [X] T027 [US3] Implement `core/src/export.rs`:
   - an `ExportFs` trait and a real implementation;
   - partial files, then removing the old sidecar, renaming the WAV, renaming the sidecar, with rollback on a failed second rename;
   - the size refusal (R-03).

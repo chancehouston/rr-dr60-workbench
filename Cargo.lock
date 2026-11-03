@@ -2882,6 +2882,8 @@ version = "0.1.0"
 dependencies = [
  "coreaudio-rs",
  "eframe",
+ "objc2-audio-toolbox",
+ "objc2-core-audio",
  "rfd",
  "rr_dr60",
  "workbench_core",

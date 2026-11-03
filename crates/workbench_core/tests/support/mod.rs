@@ -533,3 +533,31 @@ pub fn set_num(panel: &mut workbench_core::panel::Panel, id: &str, v: f64) {
 pub fn set_switch(panel: &mut workbench_core::panel::Panel, id: &str, on: bool) {
     set(panel, id, ControlReading::Switch(on));
 }
+
+/// An opened input from a 24-bit WAV of `x` at `rate`.
+pub fn input_of(rate: u32, x: &[f32]) -> workbench_core::input::Input {
+    workbench_core::input::open_bytes(
+        "voice.wav",
+        wav_i24(rate, &to_i24(x)),
+        workbench_core::input::Channel::Index(0),
+    )
+    .expect("open")
+}
+
+/// A render request built from an opened input and a panel.
+pub fn request_for(
+    input: &workbench_core::input::Input,
+    panel: &workbench_core::panel::Panel,
+    tail: bool,
+) -> workbench_core::render::RenderRequest {
+    let (settings, engine_values) = panel.snapshot();
+    workbench_core::render::RenderRequest {
+        input: input.samples.clone(),
+        input_sha256: input.input_sha256,
+        channel: input.channel,
+        settings,
+        engine_values,
+        tail,
+        block: workbench_core::render::BLOCK,
+    }
+}
