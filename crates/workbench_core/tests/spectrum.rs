@@ -160,6 +160,21 @@ fn spectrum_ratio_arithmetic() {
     assert!(!r.events.is_empty());
     let range = (0, x.len() as u64);
     let p = spectrum::pair(&x, &r, range).unwrap();
+    assert!(
+        p.dropped_frames > 0,
+        "frames that hold a splice are dropped"
+    );
+    // Independently: no render run holds a splice position or comes within the guard of one.
+    let runs = spectrum::render_runs(p.range_out, &r);
+    let guard = u64::from(r.playback_latency_samples);
+    for e in &r.events {
+        for &(a, b) in &runs {
+            assert!(
+                e.output_position + guard <= a || e.output_position >= b + guard,
+                "a run near a splice"
+            );
+        }
+    }
     for k in 0..p.original.power.len() {
         if let Some(d) = p.ratio_db(k) {
             assert_eq!(d, p.render.db(k) - p.original.db(k));

@@ -60,6 +60,8 @@ pub struct Render {
     pub latency_samples: u32,
     /// The engine's playback drain (part of the tail's figure).
     pub drain_samples: u32,
+    /// The engine's playback-side latency (the guard around splices in spectra; post-impl B3).
+    pub playback_latency_samples: u32,
     /// Splices (drop mode) or muted regions (mute mode): Σ `BlockInfo.events`.
     pub splices_or_regions: u64,
     /// The engine's reports, positions from the start of the render.
@@ -102,6 +104,16 @@ pub fn gate_reached(s: &Settings) -> bool {
 }
 
 impl RenderRequest {
+    /// The staleness predicate (001 D5), shared by renders and the tap table: the input, the
+    /// channel, the tail switch, the settings or the engine values differ.
+    pub fn differs(&self, other: &RenderRequest) -> bool {
+        self.input_sha256 != other.input_sha256
+            || self.channel != other.channel
+            || self.tail != other.tail
+            || self.settings != other.settings
+            || self.engine_values != other.engine_values
+    }
+
     /// The request for `input` with `panel`'s values (the session's one constructor).
     pub fn new(input: &input::Input, panel: &crate::panel::Panel, tail: bool) -> Self {
         let (settings, engine_values) = panel.snapshot();
@@ -165,6 +177,7 @@ pub fn render(
     let mut p = fresh_engine(req)?;
     let latency = p.latency_samples();
     let drain = p.drain_samples();
+    let playback_latency = p.playback_latency_samples();
     let tail = if req.tail { tail_for(&p) } else { 0 };
     let block = req.block.max(1);
     let total = req.input.len() as u64 + tail;
@@ -219,6 +232,7 @@ pub fn render(
         tail_samples: tail,
         latency_samples: latency,
         drain_samples: drain,
+        playback_latency_samples: playback_latency,
         splices_or_regions: count,
         events,
         drop_mode: req.settings.vas.mode == VasMode::Drop,
@@ -235,11 +249,6 @@ pub fn render(
 impl Render {
     /// True when the session's current values differ from the render's (D5).
     pub fn is_stale(&self, current: &RenderRequest) -> bool {
-        let a = &self.request;
-        a.input_sha256 != current.input_sha256
-            || a.channel != current.channel
-            || a.tail != current.tail
-            || a.settings != current.settings
-            || a.engine_values != current.engine_values
+        self.request.differs(current)
     }
 }

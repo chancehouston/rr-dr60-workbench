@@ -45,6 +45,54 @@ fn tap_browser_digest_equals_render() {
 }
 
 #[test]
+fn tap_browser_stops_after_the_current_tap() {
+    let rate = 8000;
+    let x = voiced(rate, 0.6, 0.5);
+    let req = request(rate, &x, |_| {});
+    let t = taps::browse_with(&req, &AtomicU64::new(0), |k| k >= 2);
+    assert_eq!(t.rows.len(), 2, "two finished rows stay");
+    for row in &t.rows {
+        let r = row.outcome.as_ref().unwrap();
+        let d = run(&request(rate, &x, |p| set_choice(p, "tap", row.tap)));
+        assert_eq!(r.sha256, d.output_sha256);
+        let s = r.spectrum.as_ref().expect("a render-side spectrum");
+        assert_eq!(
+            *s,
+            workbench_core::analysis::spectrum::render_side(&d).unwrap()
+        );
+    }
+}
+
+#[test]
+fn tap_table_stale() {
+    let rate = 8000;
+    let x = voiced(rate, 0.4, 0.5);
+    let req = request(rate, &x, |_| {});
+    let t = taps::browse_with(&req, &AtomicU64::new(0), |k| k >= 1);
+    assert!(!t.is_stale(&req));
+    let mut a = req.clone();
+    a.tail = !a.tail;
+    assert!(t.is_stale(&a), "the tail");
+    let mut b = req.clone();
+    b.channel = workbench_core::input::Channel::Mix;
+    assert!(t.is_stale(&b), "the channel");
+    let mut c = req.clone();
+    c.settings.seed ^= 1;
+    assert!(t.is_stale(&c), "the settings");
+    let mut d = req.clone();
+    d.input_sha256[0] ^= 1;
+    assert!(t.is_stale(&d), "the input");
+    let e = request(rate, &x, |p| {
+        set(
+            p,
+            "volume",
+            rr_dr60::control_map::ControlReading::Continuous(0.5),
+        )
+    });
+    assert!(t.is_stale(&e), "the engine values");
+}
+
+#[test]
 fn tap_browser_cancel() {
     let rate = 8000;
     let x = voiced(rate, 0.5, 0.5);

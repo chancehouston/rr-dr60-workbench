@@ -74,7 +74,7 @@ pub const FIELDS: [MeterField; 13] = [
         unit: "sample peak",
         kind: Kind::Max,
         side: Side::Input,
-        note: "the largest absolute sample entering stage 3 (after stages 1 – 2 and the slot)",
+        note: "the largest absolute sample entering stage 3 (after stages 1 – 2 and the slot; at after_mic_amp: stage 2's output, before the slot)",
         get: |m| f64::from(m.limiter_input_peak),
     },
     MeterField {
@@ -255,5 +255,94 @@ pub fn route_of(engine_values: &[(u32, rr_dr60::control_map::ControlReading)]) -
             Route::Earphone
         }
         _ => Route::Speaker,
+    }
+}
+
+/// Where a row's figure sits on the original's clock (D3; post-implementation review B1): the
+/// call's input span for the input side and the device points, and for the output side the
+/// call's output span mapped through the engine's map with its last sample (`o1 − 1`), so a call
+/// ending at a splice does not stretch across the removed pause. `None` for an output-side figure
+/// of a call that emitted nothing.
+pub fn placed_span(
+    row: &MeterRow,
+    field: &MeterField,
+    r: &crate::render::Render,
+) -> Option<(u64, u64)> {
+    match field.side {
+        Side::Output => {
+            let (o0, o1) = row.out_span;
+            if o1 <= o0 {
+                return None;
+            }
+            let to_in = |o: u64| {
+                rr_dr60::timeline::onepass_output_to_input(
+                    o,
+                    r.latency_samples,
+                    &r.events,
+                    r.drop_mode,
+                )
+                .0
+            };
+            Some((to_in(o0), to_in(o1 - 1) + 1))
+        }
+        _ => (row.in_span.1 > row.in_span.0).then_some(row.in_span),
+    }
+}
+
+/// The plot points of a field in seconds on the original's clock: the rest point at 0, maxima
+/// and counts as steps over their span, states at their span's end, and a break (NaN) at every
+/// removed pause or muted region.
+pub fn plot_points(field: &MeterField, r: &crate::render::Render) -> Vec<[f64; 2]> {
+    let rate = f64::from(r.request.rate_hz);
+    let mut pts = Vec::with_capacity(r.meters.len() * 2 + 1);
+    if let Some(rest) = r.meters.first() {
+        pts.push([0.0, (field.get)(&rest.meters)]);
+    }
+    let marks = crate::ab::marks(r);
+    let mut prev_end: Option<u64> = None;
+    for row in r.meters.iter().skip(1) {
+        let Some((s, e)) = placed_span(row, field, r) else {
+            continue;
+        };
+        if let Some(pe) = prev_end
+            && marks
+                .iter()
+                .any(|m| m.input_span.0 >= pe && m.input_span.0 < s.max(pe + 1))
+        {
+            pts.push([pe as f64 / rate, f64::NAN]);
+        }
+        let v = (field.get)(&row.meters);
+        if field.kind == Kind::State {
+            pts.push([e as f64 / rate, v]);
+        } else {
+            pts.push([s as f64 / rate, v]);
+            pts.push([e as f64 / rate, v]);
+        }
+        prev_end = Some(e);
+    }
+    pts
+}
+
+/// A value as shown, with its unit's companions (D2): dBFS beside a sample peak, ms beside the
+/// hang, and a count as a fraction of the call's samples in its own domain.
+pub fn display(field: &MeterField, row: &MeterRow, rate: u32) -> String {
+    let v = (field.get)(&row.meters);
+    match (field.id, field.kind) {
+        ("hang_remaining_samples", _) => format!("{v} device samples ({:.1} ms)", v / 6.0),
+        (_, Kind::Count) => {
+            let n = match field.side {
+                Side::Device => (row.in_span.1 - row.in_span.0) as f64 * 6000.0 / f64::from(rate),
+                Side::Output => (row.out_span.1 - row.out_span.0) as f64,
+                Side::Input => (row.in_span.1 - row.in_span.0) as f64,
+            };
+            format!(
+                "{v} ({:.1} % of the call's samples)",
+                if n > 0.0 { 100.0 * v / n } else { 0.0 }
+            )
+        }
+        (_, Kind::Max) if field.unit.starts_with("sample peak") => {
+            format!("{v:.4} ({:.2} dBFS)", 20.0 * v.max(1e-12).log10())
+        }
+        _ => format!("{v:.4}"),
     }
 }

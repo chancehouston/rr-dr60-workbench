@@ -40,4 +40,4 @@ description: "Tasks for feature 002, taps, scopes and meters"
 - [X] T014 `reach` lists `meters` and `rest_meters` and asserts ≥ 14 (14/70). `source_scan::analysis_only_reads`. `render_oracle` adds block 4096.
 - [X] T015 `speed_002` (release) and a re-run of 001's `render_speed` at the 10 ms block.
 - [X] T016 Records: `records.md`; 001's sidecar contract note on the block; README and CLAUDE.md; CHANGELOG.
-- [ ] T017 Post-implementation reviews (coach, hardware), applied before the PR.
+- [X] T017 Post-implementation reviews (coach, hardware), applied before the PR.

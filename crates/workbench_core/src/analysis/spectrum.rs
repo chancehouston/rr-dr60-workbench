@@ -166,8 +166,10 @@ impl SpectrumPair {
 
 /// The render's runs inside `range_out` that hold neither a splice (drop mode), a muted region
 /// (mute mode) nor an output before the latency (which maps before input 0): research R-02 and
-/// the plan review's B3.
-fn render_runs(range_out: (u64, u64), r: &Render) -> Vec<(u64, u64)> {
+/// the plan review's B3. Each run is shrunk by the engine's playback-side latency at an edge that
+/// is a splice or a region boundary, so no frame carries the reconstruction's smear across it
+/// (post-implementation review B3).
+pub fn render_runs(range_out: (u64, u64), r: &Render) -> Vec<(u64, u64)> {
     let first = crate::ab::to_render(0, r, crate::ab::AbMode::EngineMap);
     let mut cuts: Vec<(u64, u64)> = crate::ab::marks(r)
         .iter()
@@ -183,19 +185,29 @@ fn render_runs(range_out: (u64, u64), r: &Render) -> Vec<(u64, u64)> {
         })
         .collect();
     cuts.sort_unstable();
+    let guard = u64::from(r.playback_latency_samples);
     let mut runs = Vec::new();
     let mut a = range_out.0.max(first);
+    let mut a_edge = false;
     for (s, e) in cuts {
         if e < a || s >= range_out.1 {
             continue;
         }
         if s > a {
-            runs.push((a, s.min(range_out.1)));
+            let lo = if a_edge { a + guard } else { a };
+            let hi = s.min(range_out.1).saturating_sub(guard);
+            if hi > lo {
+                runs.push((lo, hi));
+            }
         }
         a = a.max(e);
+        a_edge = true;
     }
     if a < range_out.1 {
-        runs.push((a, range_out.1));
+        let lo = if a_edge { a + guard } else { a };
+        if range_out.1 > lo {
+            runs.push((lo, range_out.1));
+        }
     }
     runs
 }
@@ -233,6 +245,16 @@ pub fn kept_spans(range: (u64, u64), r: &Render) -> Vec<(u64, u64)> {
         .map(|(a, b)| (a.max(range.0), b.min(range.1)))
         .filter(|(a, b)| b > a)
         .collect()
+}
+
+/// The render-side spectrum over the whole render, its runs only (the tap browser's figure).
+///
+/// # Errors
+///
+/// [`TooShort`] when no run holds a frame.
+pub fn render_side(r: &Render) -> Result<Spectrum, TooShort> {
+    let runs = render_runs((0, r.samples.len() as u64), r);
+    welch(&r.samples, r.request.rate_hz, &runs)
 }
 
 /// The pair for an original range (D6).

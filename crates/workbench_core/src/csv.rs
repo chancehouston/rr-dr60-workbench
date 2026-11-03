@@ -25,7 +25,7 @@ pub fn spectrum_csv(p: &SpectrumPair, r: &Render) -> String {
     s += &engine_line(r);
     let _ = writeln!(
         s,
-        "# N {}, Hann periodic, 50 % overlap, power average, dB re full-scale sine per 5 Hz bin (ENBW 7.5 Hz); range in [{}, {}) out [{}, {}); frames original {}, render {} (dropped {})",
+        "# N {}, Hann periodic, 50 % overlap, power average, dB re full-scale sine per 5 Hz bin (ENBW 7.5 Hz); range in [{}, {}) out [{}, {}); frames original {}, render {} (dropped at splices or muted regions {}); guard at splice and region edges {} samples",
         p.original.n,
         p.range_in.0,
         p.range_in.1,
@@ -33,7 +33,8 @@ pub fn spectrum_csv(p: &SpectrumPair, r: &Render) -> String {
         p.range_out.1,
         p.original.frames,
         p.render.frames,
-        p.dropped_frames
+        p.dropped_frames,
+        r.playback_latency_samples
     );
     s += "freq_hz,original_db,render_db,ratio_db\n";
     for k in 0..p.original.power.len() {
@@ -135,6 +136,22 @@ pub fn paths(stem: &Path) -> (PathBuf, PathBuf) {
         p.push(".sidecar.txt");
         PathBuf::from(p)
     })
+}
+
+/// Writes a CSV and a sidecar text beside it (the tap table's own).
+///
+/// # Errors
+///
+/// The file system's.
+pub fn write_with_sidecar_text(
+    fs: &mut impl ExportFs,
+    stem: &Path,
+    csv: &str,
+    sidecar: &str,
+) -> std::io::Result<()> {
+    let (c, side) = paths(stem);
+    fs.write(&c, csv.as_bytes())?;
+    fs.write(&side, sidecar.as_bytes())
 }
 
 /// Writes a CSV and the render's sidecar beside it.

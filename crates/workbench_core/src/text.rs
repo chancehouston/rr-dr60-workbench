@@ -68,6 +68,8 @@ pub const AB_ENGINE_MAP: &str = "Same moment (the engine's one-pass map)";
 pub const AB_SAME_SECONDS: &str = "Same seconds";
 /// Overloads counted on the device.
 pub const OVERLOADS: &str = "Device overloads";
+/// An empty take in the views.
+pub const NO_SAMPLES: &str = "No samples: the take is empty";
 /// A sidecar opened before its input.
 pub const OPEN_INPUT_FIRST: &str = "Open the input file before its sidecar";
 /// Exporting a stale render (coach 2: allowed, from the render's own request).
@@ -146,6 +148,7 @@ pub fn all() -> Vec<String> {
         AB_SAME_SECONDS,
         OVERLOADS,
         OPEN_INPUT_FIRST,
+        NO_SAMPLES,
         STALE_EXPORT,
     ]
     .iter()

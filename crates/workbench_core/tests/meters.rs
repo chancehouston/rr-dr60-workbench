@@ -128,8 +128,59 @@ fn drive(rate: u32) -> Vec<f32> {
 }
 
 #[test]
-fn meter_reach_pinned() {
+fn meter_points_on_clock() {
     let rate = 16000;
+    let b = voiced(rate, 0.5, 0.8);
+    let gap = vec![0.0f32; 3 * rate as usize];
+    let x = [b.clone(), gap.clone(), b.clone(), gap, b].concat();
+    let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "drop")));
+    let marks = workbench_core::ab::marks(&r);
+    assert!(!marks.is_empty());
+    let route = FIELDS.iter().find(|f| f.id == "route_peak").unwrap();
+    for row in r.meters.iter().skip(1) {
+        if let Some((s, e)) = meters::placed_span(row, route, &r) {
+            for m in &marks {
+                let (a, z) = m.input_span;
+                let straddles =
+                    row.out_span.0 < m.output_position && row.out_span.1 > m.output_position;
+                assert!(
+                    straddles || e <= a || s >= z,
+                    "an output-side span {s}..{e} covers the removed pause {a}..{z}"
+                );
+            }
+        } else {
+            assert_eq!(
+                row.out_span.0, row.out_span.1,
+                "only empty calls have no place"
+            );
+        }
+    }
+    let pts = meters::plot_points(route, &r);
+    assert_eq!(
+        pts[0],
+        [0.0, f64::from(r.meters[0].meters.route_peak)],
+        "the rest point first"
+    );
+    assert!(pts.iter().any(|p| p[1].is_nan()), "a break at a pause");
+    let hang = FIELDS
+        .iter()
+        .find(|f| f.id == "hang_remaining_samples")
+        .unwrap();
+    assert!(meters::display(hang, &r.meters[1], rate).contains(" ms)"));
+    let clamp = FIELDS.iter().find(|f| f.id == "adc_clamp_count").unwrap();
+    assert!(meters::display(clamp, &r.meters[1], rate).contains("% of the call's samples"));
+    let peak = FIELDS.iter().find(|f| f.id == "input_peak").unwrap();
+    assert!(meters::display(peak, &r.meters[1], rate).contains("dBFS"));
+}
+
+#[test]
+fn meter_reach_pinned() {
+    for rate in [6000, 16000, 48000] {
+        reach_at(rate);
+    }
+}
+
+fn reach_at(rate: u32) {
     let x = drive(rate);
     let e = rr_dr60::controls::control("tap").unwrap();
     let rr_dr60::controls::ControlValue::Choice { options, .. } = e.value else {
@@ -137,10 +188,15 @@ fn meter_reach_pinned() {
     };
     let mut checked = 0;
     for o in options {
-        for (route, agc, clamp, volts) in [
-            ("speaker", true, true, 3.0f32),
-            ("earphone", true, true, 3.0),
-            ("speaker", false, false, 2.4),
+        // (route, agc, clamps, volts, volume amp, gate, playback stage, record stage)
+        for (route, agc, clamp, volts, amp, gate, play, rec) in [
+            ("speaker", true, true, 3.0f32, true, true, true, true),
+            ("earphone", true, true, 3.0, true, true, true, true),
+            ("speaker", false, false, 2.4, true, true, true, true),
+            ("speaker", false, true, 3.0, true, true, true, true),
+            ("speaker", true, true, 3.0, false, true, true, true),
+            ("speaker", true, true, 3.0, true, false, true, true),
+            ("speaker", true, true, 3.0, true, true, false, false),
         ] {
             let tap = o.identifier;
             if (tap == "after_speaker" && route == "earphone")
@@ -175,7 +231,10 @@ fn meter_reach_pinned() {
                     .iter()
                     .any(|m| (f.get)(&m.meters) != (f.get)(&rest));
                 let want = meters::reached(f, &req.settings, rt);
-                let tag = format!("{tap} {route} agc={agc} clamp={clamp}: {}", f.id);
+                let tag = format!(
+                    "{rate} {tap} {route} agc={agc} clamp={clamp} amp={amp} gate={gate} play={play} rec={rec}: {}",
+                    f.id
+                );
                 if f.id == "battery_ceiling" {
                     // A state of a setting (plan review B1): every row reads the factor in force.
                     assert!(
@@ -203,7 +262,7 @@ fn meter_reach_pinned() {
             }
         }
     }
-    assert!(checked > 300);
+    assert!(checked > 900, "{checked}");
 }
 
 #[test]

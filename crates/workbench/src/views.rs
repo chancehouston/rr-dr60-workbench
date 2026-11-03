@@ -11,7 +11,7 @@ use workbench_core::ab::{self, AbMode};
 use workbench_core::analysis::envelope::Envelope;
 use workbench_core::analysis::spectrogram::{self, Spectrogram};
 use workbench_core::analysis::spectrum::{self, SpectrumPair};
-use workbench_core::meters::{self, FIELDS, Kind};
+use workbench_core::meters::{self, FIELDS};
 use workbench_core::render::Render;
 use workbench_core::session::Session;
 use workbench_core::taps::{self, TapTable};
@@ -79,6 +79,19 @@ fn start<T: Send + 'static>(
     }
 }
 
+fn save_csv_text(stem_hint: &str, content: &str, sidecar: &str) -> String {
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(format!("{stem_hint}.csv"))
+        .save_file()
+    else {
+        return String::new();
+    };
+    match csv::write_with_sidecar_text(&mut export::RealFs, &path, content, sidecar) {
+        Ok(()) => format!("Exported {} with its sidecar", path.display()),
+        Err(e) => format!("The export failed: {e}"),
+    }
+}
+
 fn save_csv(stem_hint: &str, content: &str, r: &Render) -> String {
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(format!("{stem_hint}.csv"))
@@ -123,6 +136,10 @@ impl Views {
             ui.label("Render first.");
             return;
         };
+        if inp.samples.is_empty() || r.samples.is_empty() {
+            ui.label(text::NO_SAMPLES);
+            return;
+        }
         let key = r.output_sha256;
         if self.envelopes.as_ref().is_none_or(|(k, _, _)| *k != key) {
             self.envelopes = Some((key, Envelope::new(&inp.samples), Envelope::new(&r.samples)));
@@ -198,7 +215,10 @@ impl Views {
             None,
             &marks,
         );
-        ui.weak("Aligned within about one device sample (a few with the speech coder on); marks: removed pauses or muted regions.");
+        ui.weak(format!(
+            "Aligned within about one device sample (a few with the speech coder on); marks: removed pauses or muted regions. On the engine's map the first {} render samples (before input 0) and the {}-sample tail are not drawn; Raw shows them.",
+            r.latency_samples, r.tail_samples
+        ));
         ui.separator();
         // Spectra (D6) over the view's range.
         ui.horizontal(|ui| {
@@ -230,12 +250,13 @@ impl Views {
                     .filter_map(|k| p.ratio_db(k).map(|d| [p.original.freq(k).log10(), d]))
                     .collect();
                 ui.weak(format!(
-                    "Welch, N {} (5 Hz bins), Hann, 50 % overlap; {} re full-scale sine; frames: original {}, render {} ({} dropped at splices). Tone levels are not read here (scalloping up to 1.42 dB).",
+                    "Welch, N {} (5 Hz bins), Hann, 50 % overlap; {} re full-scale sine; frames: original {}, render {} ({} dropped: splices, muted regions; a guard of {} samples at their edges). Tone levels are not read here (scalloping up to 1.42 dB).",
                     p.original.n,
                     if self.per_hz { "dB/Hz" } else { "dB per 5 Hz bin (ENBW 7.5 Hz)" },
                     p.original.frames,
                     p.render.frames,
-                    p.dropped_frames
+                    p.dropped_frames,
+                    r.playback_latency_samples
                 ));
                 Plot::new("spectra")
                     .height(220.0)
@@ -287,10 +308,27 @@ impl Views {
             }
         });
         if let Some((s, tex)) = &self.sg {
+            let rate = if self.sg_render {
+                r.request.rate_hz
+            } else {
+                inp.rate_hz
+            };
+            let bin = f64::from(rate) / s.frame_n as f64;
             ui.weak(format!(
-                "Hann {} samples, hop {}, dB re full-scale sine per frame bin, −120 … +7 dB (brighter is louder; above +7.25 saturated)",
-                s.frame_n, s.hop
+                "Hann {} samples ({bin:.0} Hz bins, ENBW {:.1} Hz), hop {}, each column the maximum over its frames; range {} – {}; dB re full-scale sine per bin, −120 … +7 dB, brighter is louder, red above +7.25 dB (saturated)",
+                s.frame_n,
+                1.5 * bin,
+                s.hop,
+                s.range.0,
+                s.range.1
             ));
+            let current = if self.sg_render { (ra, rb) } else { (a, b) };
+            if s.range != current {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "The spectrogram is of an earlier view range: compute it again.",
+                );
+            }
             let size = egui::vec2(ui.available_width(), 240.0);
             ui.image((tex.id(), size));
         }
@@ -313,7 +351,6 @@ impl Views {
                 .collect();
         }
         let route = meters::route_of(&r.request.engine_values);
-        let rate = f64::from(r.request.rate_hz);
         ui.horizontal(|ui| {
             if ui.button("Export meters CSV…").clicked() {
                 self.messages = vec![save_csv("meters", &csv::meters_csv(r), r)];
@@ -341,30 +378,14 @@ impl Views {
                 if !self.meter_on[i] || !reached {
                     continue;
                 }
-                let mut pts: Vec<[f64; 2]> = Vec::with_capacity(r.meters.len() * 2);
-                for m in r.meters.iter().skip(1) {
-                    let (s, e) = match f.side {
-                        meters::Side::Output => {
-                            let to_in = |o: u64| {
-                                rr_dr60::timeline::onepass_output_to_input(
-                                    o,
-                                    r.latency_samples,
-                                    &r.events,
-                                    r.drop_mode,
-                                )
-                                .0
-                            };
-                            (to_in(m.out_span.0), to_in(m.out_span.1))
-                        }
-                        _ => m.in_span,
-                    };
-                    let v = (f.get)(&m.meters);
-                    if f.kind == Kind::State {
-                        pts.push([e as f64 / rate, v]);
-                    } else {
-                        pts.push([s as f64 / rate, v]);
-                        pts.push([e as f64 / rate, v]);
-                    }
+                // The core places the figures (rest point first, steps and states, breaks at
+                // pauses: `meters::plot_points`).
+                let pts = meters::plot_points(f, r);
+                if let Some(last) = r.meters.last() {
+                    ui.weak(format!(
+                        "last call: {}",
+                        meters::display(f, last, r.request.rate_hz)
+                    ));
                 }
                 Plot::new(("meter", i))
                     .height(90.0)
@@ -388,23 +409,22 @@ impl Views {
             } else if ui.button("Render at every tap").clicked()
                 && let Some(req) = session.request()
             {
-                self.taps_job = Some(start(12, move |p, c| taps::browse(&req, p, c)));
+                self.taps_job = Some(start(taps::tap_count() as u64, move |p, c| {
+                    taps::browse(&req, p, c)
+                }));
             }
-            if let (Some(t), Some(r)) = (&self.taps, session.render())
+            if let Some(t) = &self.taps
+                && let Some(side) = &t.sidecar
                 && ui.button("Export taps CSV…").clicked()
             {
-                self.messages = vec![save_csv("taps", &csv::taps_csv(t), r)];
+                self.messages = vec![save_csv_text("taps", &csv::taps_csv(t), side)];
             }
         });
         let Some(t) = &self.taps else {
             ui.label("A fresh engine per tap, with the session's values; each tap's readings, digest and spectrum (to listen, set the tap in the panel and render).");
             return;
         };
-        if session.request().is_some_and(|q| {
-            q.settings != t.request.settings
-                || q.engine_values != t.request.engine_values
-                || q.input_sha256 != t.request.input_sha256
-        }) {
+        if session.request().is_some_and(|q| t.is_stale(&q)) {
             ui.colored_label(egui::Color32::YELLOW, text::STALE);
         }
         egui::Grid::new("taps").striped(true).show(ui, |ui| {
@@ -458,6 +478,7 @@ impl Views {
                 ))
             })
             .collect();
+        ui.weak("Render side at each tap, over the render's own runs: Welch N rate ÷ 5, dB re full-scale sine per 5 Hz bin (ENBW 7.5 Hz).");
         Plot::new("tap spectra")
             .height(260.0)
             .legend(egui_plot::Legend::default())
@@ -534,12 +555,25 @@ fn strip(
     let mid = rect.center().y;
     let h = rect.height() / 2.0;
     let colour = ui.visuals().text_color();
+    let mut beyond = 0usize;
     for (i, &(lo, hi)) in cols.iter().enumerate() {
         let x = rect.left() + i as f32;
+        let clipped = lo < -2.0 || hi > 2.0;
+        beyond += usize::from(clipped);
         let (lo, hi) = (lo.clamp(-2.0, 2.0) / 2.0, hi.clamp(-2.0, 2.0) / 2.0);
+        let c = if clipped { egui::Color32::RED } else { colour };
         painter.line_segment(
             [egui::pos2(x, mid - hi * h), egui::pos2(x, mid - lo * h)],
-            egui::Stroke::new(1.0, colour),
+            egui::Stroke::new(1.0, c),
+        );
+    }
+    if beyond > 0 {
+        painter.text(
+            rect.right_top(),
+            egui::Align2::RIGHT_TOP,
+            format!("{beyond} columns beyond ±2 (red)"),
+            egui::FontId::proportional(10.0),
+            egui::Color32::RED,
         );
     }
     for &m in marks {
@@ -575,8 +609,11 @@ fn colour_image(s: &Spectrogram) -> egui::ColorImage {
     for c in 0..s.cols as usize {
         for k in 0..h {
             let v = s.data[c * h + k];
-            let g = if v == spectrogram::SATURATED { 255 } else { v };
-            px[(h - 1 - k) * w + c] = egui::Color32::from_rgb(g / 2, g, (255 - g) / 3);
+            px[(h - 1 - k) * w + c] = if v == spectrogram::SATURATED {
+                egui::Color32::RED
+            } else {
+                egui::Color32::from_rgb(v / 2, v, (255 - v) / 3)
+            };
         }
     }
     egui::ColorImage::new([w, h], px)

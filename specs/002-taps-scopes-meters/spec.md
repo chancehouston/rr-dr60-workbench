@@ -18,6 +18,15 @@
   - **No meter block finer than 10 ms.** That is the shortest block that is a whole number of samples at all seven rates.
 - No other ambiguity remains that would change the plan.
 
+### Session 2026-11-02 (implementation and post-implementation reviews: dated restatements)
+
+- **D7's scale** runs −120 … **+7 dB** in 0.5 dB steps. Index 255 means above +7.25 dB, saturated and drawn red; the speaker route reaches about +7 dB (plan review B7). The caption states the bin, the ENBW, "column = maximum over its frames" and the range, and marks a spectrogram of an earlier range as stale.
+- **D6's runs** are shrunk at every splice and muted-region edge by the engine's playback-side latency (`playback_latency_samples`), so no frame carries the reconstruction's smear across an edge. "Dropped" counts frames lost to splices and to muted regions.
+- **D5**: on the engine's map, the render samples before input 0 (the latency) and the tail are listed, not drawn; Raw shows them. Waveform columns beyond ±2 are drawn red and counted.
+- **D8**: a tap's spectrum is the **render side** over that tap's own runs, captioned as such. A tap's refusal is the engine's own render error. The table keeps the sidecar of the request's own render, which reproduces it, and goes stale by 001's full rule.
+- **D3**: output-side figures are placed with their call's last output (`o1 − 1`), so a call that ends at a splice does not stretch across the pause. The placement is in the core (`meters::placed_span`, `plot_points`), with breaks at pauses.
+- **FR-013**: reach is **15/70**, with `playback_latency_samples` added for the guard.
+
 ## Decisions (in force under autopilot)
 
 | # | Decision | In force |

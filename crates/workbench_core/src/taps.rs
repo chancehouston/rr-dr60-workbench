@@ -29,7 +29,7 @@ pub struct TapReadings {
     pub peak: f32,
     /// SHA-256 of the output.
     pub sha256: [u8; 32],
-    /// The spectrum over the take without its tail (None when too short).
+    /// The render-side spectrum over the render's own runs (None when too short).
     pub spectrum: Option<Spectrum>,
 }
 
@@ -49,6 +49,20 @@ pub struct TapTable {
     pub request: RenderRequest,
     /// One row per tap, in the tap control's order.
     pub rows: Vec<TapResult>,
+    /// The sidecar of the request's own render (the CSV's companion; post-impl coach 1).
+    pub sidecar: Option<String>,
+}
+
+impl TapTable {
+    /// Stale under 001's D5 rule (post-implementation review, coach 2).
+    pub fn is_stale(&self, current: &RenderRequest) -> bool {
+        self.request.differs(current)
+    }
+}
+
+/// The number of taps the browser renders.
+pub fn tap_count() -> usize {
+    tap_control().1.len()
 }
 
 /// The tap control's index and options.
@@ -67,10 +81,21 @@ fn tap_control() -> (u32, &'static [rr_dr60::controls::ControlOption]) {
 /// Renders `req` at every tap (FR-008). `progress` counts taps done; a cancel stops after the
 /// current tap and keeps the finished rows.
 pub fn browse(req: &RenderRequest, progress: &AtomicU64, cancel: &AtomicBool) -> TapTable {
+    browse_with(req, progress, |_| cancel.load(Ordering::Relaxed))
+}
+
+/// [`browse`] with a stop rule asked before each tap (`k` = the taps done).
+pub fn browse_with(
+    req: &RenderRequest,
+    progress: &AtomicU64,
+    stop: impl Fn(usize) -> bool,
+) -> TapTable {
     let (tap_index, options) = tap_control();
+    let own_tap = rr_dr60::control_map::settings_value(&req.settings, tap_index).ok();
     let mut rows = Vec::new();
+    let mut sidecar = None;
     for (k, o) in options.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if stop(k) {
             break;
         }
         let mut q = req.clone();
@@ -86,10 +111,10 @@ pub fn browse(req: &RenderRequest, progress: &AtomicU64, cancel: &AtomicBool) ->
         let none = AtomicBool::new(false);
         let outcome = match render::render(&q, &AtomicU64::new(0), &none) {
             Ok(Some(r)) => {
-                let len_no_tail = req.input.len() as u64;
-                let spectrum = spectrum::pair(&req.input, &r, (0, len_no_tail))
-                    .ok()
-                    .map(|p| p.render);
+                let spectrum = spectrum::render_side(&r).ok();
+                if own_tap == Some(ControlReading::Choice(o.value)) {
+                    sidecar = Some(crate::sidecar::write(&r));
+                }
                 Ok(TapReadings {
                     length: r.samples.len() as u64,
                     latency: r.latency_samples,
@@ -115,5 +140,6 @@ pub fn browse(req: &RenderRequest, progress: &AtomicU64, cancel: &AtomicBool) ->
     TapTable {
         request: req.clone(),
         rows,
+        sidecar,
     }
 }

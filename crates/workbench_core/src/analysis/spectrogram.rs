@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rustfft::{FftPlanner, num_complex::Complex};
 
-/// The index for "above 0 dB".
+/// The index for "above +7.25 dB" (saturated; drawn in its own colour).
 pub const SATURATED: u8 = 255;
 
 /// A spectrogram image: `cols` columns of `bins` u8 indices, bin 0 first.
