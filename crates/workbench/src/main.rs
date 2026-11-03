@@ -169,6 +169,8 @@ impl Workbench {
 
     /// Starts a live run at the start position with the panel's values and the schedule (D1, D3).
     fn start_live(&mut self) {
+        // A capture is finished before anything else changes the session (coach review 1).
+        self.stop_capture(None);
         self.stop_playback();
         let Some(mut req) = self.session.plain_request() else {
             return;
@@ -312,7 +314,6 @@ impl Workbench {
     /// Stops every output stream: a live playback and the A/B (spec 004b D7), before another
     /// stream starts or the input changes.
     fn stop_playback(&mut self) {
-        self.stop_capture(None);
         self.stop_live_play();
         self.stop_ab();
     }
@@ -330,7 +331,7 @@ impl Workbench {
         };
         if let Some(why) = workbench_core::capture::rate_refusal(dev.rate) {
             self.messages = vec![format!(
-                "{why} (a Bluetooth headset's microphone runs at 16 or 24 kHz)"
+                "{why} (some Bluetooth headset microphones run at 24 kHz, which the engine does not take)"
             )];
             return;
         }
@@ -348,6 +349,12 @@ impl Workbench {
             Channel::Mix if dev.channels == 1 => Channel::Index(0),
             c => c,
         };
+        let fallback = (channel != self.capture_channel).then(|| {
+            format!(
+                "The input device has {} channel(s): channel 1 is used",
+                dev.channels
+            )
+        });
         let list: Vec<(rr_dr60::changes::Clock, u64, u32, f64)> = self
             .schedule
             .iter()
@@ -390,7 +397,7 @@ impl Workbench {
                         block,
                         state.paused.load(Ordering::Relaxed),
                         &under,
-                        &state.monitor_drops,
+                        &state.monitor_ceiling_drops,
                     );
                 }) {
                     Ok(p) => Some(p),
@@ -404,7 +411,7 @@ impl Workbench {
         let gaps = Arc::new(workbench_core::capture::GapCounter::default());
         match capture::Capture::start(dev, core, gaps.clone()) {
             Ok(c) => {
-                self.messages = note.iter().cloned().collect();
+                self.messages = note.iter().cloned().chain(fallback).collect();
                 self.capture = Some(CaptureRun {
                     capture: c,
                     monitor,
@@ -433,6 +440,7 @@ impl Workbench {
         drop(run.capture);
         drop(run.monitor);
         run.take.drain(&mut run.queues);
+        let staged = run.queues.state.staged.load(Ordering::Relaxed);
         let mut m: Vec<String> = why.iter().map(|w| (*w).to_owned()).collect();
         let state = &run.queues.state;
         let rate = run.start_req.rate_hz;
@@ -446,6 +454,11 @@ impl Workbench {
             m.push(format!(
                 "The input device lost {} frames in {gaps} gaps (the take reproduces; the room's sound has holes there)",
                 run.gaps.missing.load(Ordering::Relaxed)
+            ));
+        }
+        if staged > 0 {
+            m.push(format!(
+                "{staged} samples (under 10 ms) after the last whole chunk are not in the capture or the take"
             ));
         }
         m.push(format!(
@@ -462,7 +475,14 @@ impl Workbench {
             return;
         }
         let path = workbench_core::capture::next_path(&dir);
-        let wav = workbench_core::live::capture_wav(&run.take.captured, rate);
+        let wav = match workbench_core::live::capture_wav(&run.take.captured, rate) {
+            Ok(w) => w,
+            Err(e) => {
+                m.push(e.to_string());
+                self.messages = m;
+                return;
+            }
+        };
         if let Err(e) = std::fs::write(&path, &wav) {
             m.push(format!("{}: {e}", text::OPEN_IO));
             self.messages = m;
@@ -478,7 +498,7 @@ impl Workbench {
                 match self.session.accept_capture(&path, take) {
                     Ok(true) => {
                         m.push(format!(
-                            "Captured {} input samples into {} ({n} output samples). The capture replaced the open file; its render and B are dropped.",
+                            "Captured {} input samples into {} ({n} output samples). The capture replaced the open file; its render, B and any restored range are dropped.",
                             req.frames,
                             path.display()
                         ));
@@ -505,7 +525,7 @@ impl Workbench {
             ui.label("channel");
             let label = |c: Channel| match c {
                 Channel::Index(i) => format!("{}", i + 1),
-                Channel::Mix => "mix (the mean, a boundary conversion)".to_owned(),
+                Channel::Mix => "mix (the mean of all the device's channels, silent ones included: a boundary conversion)".to_owned(),
             };
             egui::ComboBox::from_id_salt("capture_channel")
                 .selected_text(label(self.capture_channel))
@@ -544,7 +564,7 @@ impl Workbench {
             let st = &run.queues.state;
             let d = run.capture.device();
             ui.label(format!(
-                "{} · {} Hz · {} ch · fed {} ({:.1} s) · gaps {} · monitor drops {} · underruns {}{}",
+                "{} · {} Hz · {} ch · fed {} ({:.1} s) · gaps {} · monitor samples dropped: queue full {}, above 100 ms {} · underrun samples {}{}",
                 d.name,
                 d.rate,
                 d.channels,
@@ -552,6 +572,7 @@ impl Workbench {
                 st.fed.load(Ordering::Relaxed) as f64 / d.rate,
                 run.gaps.gaps.load(Ordering::Relaxed),
                 st.monitor_drops.load(Ordering::Relaxed),
+                st.monitor_ceiling_drops.load(Ordering::Relaxed),
                 run.underruns.load(Ordering::Relaxed),
                 if st.incomplete.load(Ordering::Relaxed) { " · incomplete" } else { "" }
             ));
@@ -573,6 +594,15 @@ impl Workbench {
     }
 
     fn open_file(&mut self, path: PathBuf, channel: Channel) {
+        // A capture is finished, its take handed over, before the user's file opens (coach 1); its
+        // messages are kept.
+        let had_capture = self.capture.is_some();
+        self.stop_capture(None);
+        let capture_messages = if had_capture {
+            std::mem::take(&mut self.messages)
+        } else {
+            Vec::new()
+        };
         self.stop_live();
         let before = self.session.input().map(|i| i.raw_sha256);
         match self.session.open(&path, channel) {
@@ -585,7 +615,7 @@ impl Workbench {
                 if self.session.input().map(|i| i.raw_sha256) != before {
                     self.int_edits.clear();
                 }
-                self.messages.clear();
+                self.messages = capture_messages;
             }
             Err(e) => self.messages = vec![e.to_string()],
         }
@@ -733,6 +763,8 @@ impl Workbench {
     }
 
     fn open_sidecar(&mut self) {
+        // A capture is finished before the restore changes the session (coach review 1).
+        self.stop_capture(None);
         let Some(path) = rfd::FileDialog::new()
             .add_filter("sidecar", &["txt"])
             .pick_file()
@@ -809,6 +841,11 @@ impl eframe::App for Workbench {
             run.silence.observe(new);
             run.seen = run.take.captured.len();
             let lost = run.capture.lost();
+            // The monitor's own output device (review B7): the take continues without it.
+            if run.monitor.as_ref().is_some_and(Playback::device_lost) {
+                run.monitor = None;
+                self.messages.push("The monitor's output device changed: monitoring stopped, the capture continues".into());
+            }
             let failed = run.queues.state.failed.load(Ordering::Relaxed);
             // The export's limit (coach review 9): stop at it.
             let full = export::check_size(
@@ -1321,7 +1358,7 @@ impl Workbench {
         let mut export = false;
         let (take, pos) = self.shared.cursor();
         // One output stream: A/B playback is off while live (spec 003 D9).
-        let idle = self.live.is_none();
+        let idle = self.live.is_none() && self.capture.is_none();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(idle, egui::Button::new("Play original"))
@@ -1511,7 +1548,11 @@ impl Workbench {
                         .range(0.0..=36_000.0)
                         .speed(0.1),
                 );
-                if ui.button("Go live").clicked() {
+                if ui
+                    .add_enabled(self.capture.is_none(), egui::Button::new("Go live"))
+                    .on_disabled_hover_text("Stop the capture first (one audio stream at a time)")
+                    .clicked()
+                {
                     self.start_live();
                 }
             } else if ui.button("Stop live").clicked() {
@@ -1721,6 +1762,7 @@ impl Workbench {
             ui.separator();
         }
         let live_playing = self.live_play.is_some();
+        let capturing = self.capture.is_some();
         let Some(dev) = &mut self.device else {
             return;
         };
@@ -1803,7 +1845,10 @@ impl Workbench {
                         play = Some(it.number);
                     }
                     if ui
-                        .add_enabled(!live_playing, egui::Button::new("play live").small())
+                        .add_enabled(
+                            !live_playing && !capturing,
+                            egui::Button::new("play live").small(),
+                        )
                         .clicked()
                     {
                         play_live = Some(it.number);
@@ -1943,7 +1988,13 @@ impl Workbench {
                 },
             );
             ui.horizontal(|ui| {
-                if ui.button("Listen (take only)").clicked() {
+                if ui
+                    .add_enabled(
+                        self.capture.is_none(),
+                        egui::Button::new("Listen (take only)"),
+                    )
+                    .clicked()
+                {
                     listen = true;
                 }
                 if ui.button("Export take…").clicked() {

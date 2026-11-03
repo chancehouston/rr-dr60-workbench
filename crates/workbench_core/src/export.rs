@@ -52,6 +52,9 @@ pub enum ExportError {
     TooLarge(u64),
     /// A file operation failed; nothing new was left behind.
     Io(std::io::Error),
+    /// A live take whose capture overflowed: it does not reproduce (spec 007 D7, coach review 3;
+    /// as 004b's playback takes).
+    Incomplete,
 }
 
 impl std::fmt::Display for ExportError {
@@ -63,6 +66,10 @@ impl std::fmt::Display for ExportError {
                 MAX_DATA_BYTES
             ),
             Self::Io(e) => write!(f, "The export failed and was removed: {e}"),
+            Self::Incomplete => write!(
+                f,
+                "This take is incomplete (a queue overflowed): it does not reproduce and is not exported"
+            ),
         }
     }
 }
@@ -137,6 +144,9 @@ pub fn wav_bytes(samples: &[f32], rate_hz: u32) -> Result<Vec<u8>, ExportError> 
 /// The size refusal, or a file operation's failure after which neither a new pair nor a mixed
 /// pair remains.
 pub fn export(fs: &mut impl ExportFs, stem: &Path, render: &Render) -> Result<(), ExportError> {
+    if render.live.as_ref().is_some_and(|l| l.incomplete) {
+        return Err(ExportError::Incomplete);
+    }
     let wav = wav_bytes(&render.samples, render.request.rate_hz)?;
     let side = sidecar::write(render);
     let (wav_path, side_path) = paths(stem);

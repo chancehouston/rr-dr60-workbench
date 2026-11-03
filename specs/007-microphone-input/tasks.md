@@ -11,4 +11,4 @@ description: "Tasks for feature 007, the Mac's microphone as the input"
 - [X] T005 The window: `crates/workbench/src/capture.rs` (the input unit, the device's loss), the Capture section, start and stop, the monitor's output unit, the poll (drain, silence, loss, the length limit), Save capture… (plan R-04).
 - [X] T006 `playback_check --capture` (FR-007; run from the owner's terminal: it needs the microphone permission).
 - [X] T007 The gate; reach; wording.
-- [ ] T008 Post-implementation reviews (coach and hardware), applied before the PR (records.md).
+- [X] T008 Post-implementation reviews (coach and hardware), applied before the PR (records.md).

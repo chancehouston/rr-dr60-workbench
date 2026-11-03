@@ -28,17 +28,17 @@ Rust 2024; coreaudio-rs 0.14 (`macos_helpers::{get_default_device_id, audio_unit
   - `staged()` gives the unfed part.
 - **R-02 The take**:
   - `TakeBuilder` gains `captured: Vec<f32>`, drained from `LiveQueues.captured` (None in File mode).
-  - `capture_request(start_req, captured)` sets the input to the captured samples, with their SHA-256 (`input_sha256` and `raw_sha256`), `frames`, `file_name` "capture", tail false and start 0.
+  - `TakeBuilder::capture_request(start_req)` sets the input to the captured samples, with their SHA-256 (`input_sha256`). The raw digest is the capture WAV's bytes (`raw_sha256`, so the session accepts the take once it opens the file). It also sets `frames`, channel 1, tail false and start 0. The window sets `file_name` to the WAV's name.
   - Then 003's `finish`.
 - **R-03 The files**:
   - `capture::wav(captured, rate)`: `export::wav_bytes` (32-bit float).
   - Opening it with `input::open_bytes` gives the same samples bit for bit (f32 WAV decoding is the identity), so the same `input_sha256`. This is pinned by `capture_wav_roundtrip`.
-  - The capture folder is `std::env::temp_dir()/rr-dr60-workbench-captures/capture-<n>.wav`. **Save capture…** copies it.
+  - The capture folder is `~/Library/Application Support/rr-dr60-workbench/captures`, and the file the first unused `capture-<n>.wav` (`capture::{folder, next_path}`). **Save capture…** copies it.
 - **R-04 The window** (`crates/workbench/src/capture.rs`, main.rs):
   - `capture.rs`: the input unit on the default input device at its nominal rate (`playback::mac::nominal_rate`), interleaved f32 with the device's channel count, and an input callback calling `LiveCore::push`.
   - The monitor is 001's output unit with `Playback::start_live` and a fill that pops the monitor queue, zeros on empty, counted.
   - A **Capture** section in the Session tab: the channel, the monitor switch with the headphones warning, Start and Stop, the counters (fed, staged, monitor drops and underruns, incomplete) and the digital-silence notice.
-  - On stop: write the capture, then `session.open(path)`, then `session.restore(&sidecar::write(&take))`, then `session.accept_live_take(take)`.
+  - On stop: write the capture, then `session.accept_capture(path, take)`. That opens the file, sets the panel to the take's start values and the tail off, and accepts the take as 003's live take. There is no sidecar restore.
 - **R-05 Digital silence**: the UI counts the captured samples it drains. When the first `rate` are all zeros, the notice is shown, and it clears on a non-zero sample.
 - **R-06 The device check**: `playback_check --capture` captures 1 s from the default input with monitoring off. It prints the rate, the channels, the fed count, whether the input is digital silence, and the offline-reproduction result. It is not run by default.
 

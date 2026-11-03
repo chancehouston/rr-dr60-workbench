@@ -12,8 +12,10 @@ use workbench_core::live::LiveCore;
 pub struct InputDevice {
     /// The device id.
     pub id: u32,
-    /// Its nominal rate.
+    /// Its rate (the nominal rate, or the hardware format's when that cannot be read).
     pub rate: f64,
+    /// The nominal rate as read at the start, for the rate-change check (review B5).
+    pub nominal: Option<f64>,
     /// Its input channels.
     pub channels: usize,
     /// Its name.
@@ -42,9 +44,11 @@ mod mac {
         let hw = unit
             .stream_format(Scope::Input, Element::Input)
             .map_err(|e| e.to_string())?;
+        let nominal = crate::playback::nominal_rate(id);
         Ok(InputDevice {
             id,
-            rate: crate::playback::nominal_rate(id).unwrap_or(hw.sample_rate),
+            nominal,
+            rate: nominal.unwrap_or(hw.sample_rate),
             channels: (hw.channels as usize).max(1),
             name: get_device_name(id).unwrap_or_default(),
         })
@@ -71,7 +75,9 @@ mod mac {
                 .map_err(|e| e.to_string())?;
             type Args = render_callback::Args<data::Interleaved<f32>>;
             unit.set_input_callback(move |args: Args| {
-                gaps.observe(args.time_stamp.mSampleTime, args.num_frames);
+                // kAudioTimeStampSampleTimeValid is bit 0 of the flags (review B4).
+                let valid = args.time_stamp.mFlags.0 & 1 != 0;
+                gaps.observe(args.time_stamp.mSampleTime, args.num_frames, valid);
                 core.push(args.data.buffer);
                 Ok(())
             })
@@ -153,7 +159,7 @@ impl Capture {
             if !crate::playback::device_alive(self.device.id) {
                 return Some("The input device is gone: the capture stopped");
             }
-            if crate::playback::nominal_rate(self.device.id) != Some(self.device.rate) {
+            if crate::playback::nominal_rate(self.device.id) != self.device.nominal {
                 return Some("The input device's rate changed: the capture stopped");
             }
             None

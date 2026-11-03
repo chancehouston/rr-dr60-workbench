@@ -36,8 +36,21 @@ fn capture(
     commands: &[(usize, Command)],
     monitor: Option<usize>,
 ) -> (Render, TakeBuilder, usize, LiveQueues) {
+    capture_with(req, &[], frames, ch, channel, commands, monitor)
+}
+
+/// [`capture`] with a schedule list (positions from the start, in their clocks).
+fn capture_with(
+    req: &RenderRequest,
+    list: &[(rr_dr60::changes::Clock, u64, u32, f64)],
+    frames: &[f32],
+    ch: usize,
+    channel: Channel,
+    commands: &[(usize, Command)],
+    monitor: Option<usize>,
+) -> (Render, TakeBuilder, usize, LiveQueues) {
     let (mut core, mut q) =
-        LiveCore::new_capture(req, &[], ch, channel, monitor.is_some()).unwrap();
+        LiveCore::new_capture(req, list, ch, channel, monitor.is_some()).unwrap();
     let mut b = TakeBuilder::default();
     let mut pos = 0;
     let mut k = 0;
@@ -273,12 +286,15 @@ fn capture_sidecar_reproduces() {
         },
     )];
     let (take, b, _, _) = capture(&req, &frames, 2, Channel::Index(0), &cmds, None);
-    // The window's flow: the capture written and opened as the session's input, the take's
-    // sidecar restored, the take accepted; then a render of the session reproduces it.
+    // The exported take's sidecar, reopened with the capture file: a render reproduces it.
     let d = std::env::temp_dir().join(format!("rr-wb-cap-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let path = d.join("capture.wav");
-    std::fs::write(&path, workbench_core::live::capture_wav(&b.captured, rate)).unwrap();
+    std::fs::write(
+        &path,
+        workbench_core::live::capture_wav(&b.captured, rate).unwrap(),
+    )
+    .unwrap();
     let mut s = workbench_core::session::Session::new();
     s.open(&path, Channel::Index(0)).unwrap();
     let side = workbench_core::sidecar::write(&take);
@@ -295,11 +311,12 @@ fn capture_sidecar_reproduces() {
 #[test]
 fn monitor_never_touches_the_take() {
     let rate = 16_000;
-    // Longer than the monitor queue's second, so a slow monitor fills it.
+    // Longer than the monitor queue holds, so a slow monitor fills it.
     let frames = stereo(rate, 2.5);
     let req = request(rate, &[], |_| {});
     let (plain, ..) = capture(&req, &frames, 2, Channel::Index(0), &[], None);
-    // A monitor drained too slowly (drops) and one drained fast (underruns on the UI side).
+    // A monitor drained too slowly (drops) and one drained fast; the underrun count is
+    // `monitor_latency_bounded`'s.
     let (slow, _, _, q) = capture(&req, &frames, 2, Channel::Index(0), &[], Some(1));
     assert!(
         q.state.monitor_drops.load(Ordering::Relaxed) > 0,
@@ -307,8 +324,8 @@ fn monitor_never_touches_the_take() {
     );
     let (fast, _, _, q2) = capture(&req, &frames, 2, Channel::Index(0), &[], Some(100_000));
     assert_eq!(q2.state.monitor_drops.load(Ordering::Relaxed), 0);
-    assert_eq!(plain.output_sha256, slow.output_sha256);
-    assert_eq!(plain.output_sha256, fast.output_sha256);
+    assert_same(&plain, &slow, "a slow monitor");
+    assert_same(&plain, &fast, "a fast monitor");
     assert!(!q.state.incomplete.load(Ordering::Relaxed));
 }
 
@@ -319,10 +336,24 @@ fn capture_incomplete() {
     let (mut core, q) = LiveCore::new_capture(&req, &[], 1, Channel::Index(0), false).unwrap();
     // Never drained: past about 10 s the take's queues are full.
     let x = tone(rate, 1.0, 0.1);
+    let mut q = q;
     for _ in 0..12 {
         core.push(&x);
     }
     assert!(q.state.incomplete.load(Ordering::Relaxed));
+    // The take is marked incomplete and its export refused (coach review 3).
+    let mut b = TakeBuilder::default();
+    b.drain(&mut q);
+    let take_req = b.capture_request(&req);
+    let take = b.finish(&take_req, &q.state).unwrap();
+    assert!(take.live.as_ref().unwrap().incomplete);
+    let e = workbench_core::export::export(
+        &mut workbench_core::export::RealFs,
+        &std::env::temp_dir().join(format!("rr-wb-inc-{}", std::process::id())),
+        &take,
+    )
+    .unwrap_err();
+    assert!(matches!(e, workbench_core::export::ExportError::Incomplete));
 }
 
 /// Coach review 3, 4: the window's hand-over. The capture replaces the open file (its render and
@@ -358,7 +389,11 @@ fn capture_session_swap() {
         "the capture file is mono"
     );
     let path = d.join("capture-1.wav");
-    std::fs::write(&path, workbench_core::live::capture_wav(&b.captured, rate)).unwrap();
+    std::fs::write(
+        &path,
+        workbench_core::live::capture_wav(&b.captured, rate).unwrap(),
+    )
+    .unwrap();
     assert!(s.accept_capture(&path, take.clone()).unwrap());
     assert!(s.b().is_none(), "the swap drops B");
     assert!(!s.is_stale(), "the take is the session's render, not stale");
@@ -400,12 +435,21 @@ fn digital_silence_noticed() {
 #[test]
 fn gaps_counted() {
     let g = workbench_core::capture::GapCounter::default();
-    g.observe(1000.0, 512);
-    g.observe(1512.0, 512);
+    // A first callback at sample time 0 (review B4).
+    g.observe(0.0, 488, true);
+    g.observe(488.0, 512, true);
+    g.observe(1000.0, 512, true);
+    g.observe(1512.0, 512, true);
     assert_eq!(g.gaps.load(Ordering::Relaxed), 0);
-    g.observe(2124.0, 512);
+    g.observe(2124.0, 512, true);
     assert_eq!(g.gaps.load(Ordering::Relaxed), 1);
     assert_eq!(g.missing.load(Ordering::Relaxed), 100);
+    // A step back is a reset, not a gap; an invalid time re-bases.
+    g.observe(10.0, 512, true);
+    assert_eq!(g.resets.load(Ordering::Relaxed), 1);
+    g.observe(0.0, 512, false);
+    g.observe(9999.0, 512, true);
+    assert_eq!(g.gaps.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -436,13 +480,17 @@ fn monitor_latency_bounded() {
     monitor_fill(&mut c, &mut big, &mut m, 1000, 4800, 160, true, &u, &d);
     assert_eq!(u.load(Ordering::Relaxed), 0);
     assert!(!m.primed && big[1999] == 0.0);
-    for i in 0..1200 {
+    // A pull of 2000 primes at max(1000, 2000 + 160) = 2160 (the target follows the pull,
+    // review B1); then a second pull with 200 left underruns by 1800, counted with the gate open.
+    for i in 0..2200 {
         p.push(i as f32).unwrap();
     }
     monitor_fill(&mut c, &mut big, &mut m, 1000, 4800, 160, false, &u, &d);
+    assert!(m.primed && u.load(Ordering::Relaxed) == 0);
+    monitor_fill(&mut c, &mut big, &mut m, 1000, 4800, 160, false, &u, &d);
     assert_eq!(
         u.load(Ordering::Relaxed),
-        800,
+        1800,
         "counted while the gate is open"
     );
 }

@@ -65,6 +65,10 @@ pub struct LiveState {
     pub replies_lost: AtomicU64,
     /// Monitor samples dropped on a full monitor queue (spec 007 D4; never the take's).
     pub monitor_drops: AtomicU64,
+    /// Monitor samples dropped above the latency ceiling (`capture::monitor_fill`; review B7).
+    pub monitor_ceiling_drops: AtomicU64,
+    /// Samples staged and not yet fed (spec 007 D5, coach review 2: reported at the stop).
+    pub staged: AtomicU64,
     /// The gate is paused after the last chunk (spec 007 review Q8: a paused gate emits nothing,
     /// so the monitor's empty queue is not an underrun then).
     pub paused: AtomicBool,
@@ -109,8 +113,12 @@ struct Capture {
 }
 
 /// The capture's file: a 32-bit float WAV (spec 007 D5); its decoding is the identity.
-pub fn capture_wav(captured: &[f32], rate_hz: u32) -> Vec<u8> {
-    crate::export::wav_bytes(captured, rate_hz).unwrap_or_default()
+///
+/// # Errors
+///
+/// Past the WAV format's size limit (the capture stops before it: coach review 11).
+pub fn capture_wav(captured: &[f32], rate_hz: u32) -> Result<Vec<u8>, crate::export::ExportError> {
+    crate::export::wav_bytes(captured, rate_hz)
 }
 
 pub use crate::input::mix_frame;
@@ -167,10 +175,12 @@ pub fn capture_start_request(
     ))
 }
 
-/// The monitor queue's capacity (spec 007 D4, review Q8): about 100 ms plus two of the largest
-/// device buffers.
+/// The monitor queue's capacity (spec 007 D4, reviews Q8, B1): about 100 ms plus the fill's
+/// widest margin.
 pub fn monitor_capacity(rate_hz: u32) -> usize {
-    rate_hz as usize / 10 + 2 * MAX_PART
+    // The fill's widest ceiling (two output buffers of MAX_PART, an input burst, two blocks)
+    // above 100 ms (hardware review B1).
+    rate_hz as usize / 10 + 4 * MAX_PART + 2 * (rate_hz as usize / 100)
 }
 
 /// The audio thread's core.
@@ -334,7 +344,8 @@ impl LiveCore {
     /// Builds the core for a capture (spec 007 D2): `req` at the device's rate with the panel's
     /// values, an empty input, start 0 and the tail off; frames of `channels` interleaved
     /// samples, of which `channel` (or the mix) is fed. The queues hold about 10 s of the UI's
-    /// stall; with `monitor`, a monitor queue of about 1 s.
+    /// stall; with `monitor`, a monitor queue of [`monitor_capacity`] (about 100 ms plus two
+    /// device buffers).
     ///
     /// # Errors
     ///
@@ -426,6 +437,9 @@ impl LiveCore {
                 self.feed_chunk(self.block);
             }
         }
+        self.state
+            .staged
+            .store(self.staged() as u64, Ordering::Relaxed);
     }
 
     /// The samples staged and not yet fed (spec 007 D5: not fed at the stop).
@@ -703,7 +717,9 @@ impl TakeBuilder {
         let mut r = start_req.clone();
         r.input = Arc::from(self.captured.clone());
         r.input_sha256 = crate::input::samples_sha256(&self.captured);
-        r.raw_sha256 = crate::records::sha256(&capture_wav(&self.captured, start_req.rate_hz));
+        r.raw_sha256 = crate::records::sha256(
+            &capture_wav(&self.captured, start_req.rate_hz).unwrap_or_default(),
+        );
         r.frames = self.captured.len() as u64;
         r.file_name = "capture".into();
         // The capture file is mono: channel 1 (coach review 2).

@@ -42,8 +42,10 @@ pub fn next_path(dir: &Path) -> PathBuf {
         .expect("an unused name")
 }
 
-/// Counts input frames the device did not deliver (coach review 6): each callback's first
-/// sample time against the previous callback's end. Real-time safe (atomics only).
+/// Counts input frames the device did not deliver (coach review 6, hardware review B4): each
+/// callback's first sample time against the previous callback's end. A callback whose sample
+/// time is not valid (`kAudioTimeStampSampleTimeValid` clear) re-bases the counter; a step back
+/// (the device's timeline reset) is counted apart and re-bases it. Real-time safe (atomics only).
 #[derive(Debug, Default)]
 pub struct GapCounter {
     /// The next expected sample time (bits of an f64; 0 before the first callback).
@@ -52,16 +54,27 @@ pub struct GapCounter {
     pub gaps: AtomicU64,
     /// Frames missing in all.
     pub missing: AtomicU64,
+    /// Timeline resets (a step back).
+    pub resets: AtomicU64,
 }
 
 impl GapCounter {
-    /// Notes a callback of `frames` starting at `sample_time`.
-    pub fn observe(&self, sample_time: f64, frames: usize) {
+    /// Notes a callback of `frames` starting at `sample_time`, `valid` when the time stamp's
+    /// sample time is.
+    pub fn observe(&self, sample_time: f64, frames: usize, valid: bool) {
+        if !valid {
+            self.next.store(0, Ordering::Relaxed);
+            return;
+        }
         let prev = f64::from_bits(self.next.load(Ordering::Relaxed));
-        if prev > 0.0 && sample_time > prev + 0.5 {
-            self.gaps.fetch_add(1, Ordering::Relaxed);
-            self.missing
-                .fetch_add((sample_time - prev).round() as u64, Ordering::Relaxed);
+        if prev > 0.0 {
+            if sample_time > prev + 0.5 {
+                self.gaps.fetch_add(1, Ordering::Relaxed);
+                self.missing
+                    .fetch_add((sample_time - prev).round() as u64, Ordering::Relaxed);
+            } else if sample_time + 0.5 < prev {
+                self.resets.fetch_add(1, Ordering::Relaxed);
+            }
         }
         self.next
             .store((sample_time + frames as f64).to_bits(), Ordering::Relaxed);
@@ -75,13 +88,16 @@ pub struct MonitorState {
     pub primed: bool,
 }
 
-/// The monitor's fill (D4; coach review 7, hardware review Q8). Real-time safe.
-/// - It plays nothing until `target` samples wait (priming), and primes again after an
-///   underrun.
-/// - When more than `ceiling` wait (the output device runs slower), it drops whole `block`s,
-///   the oldest, down to the target, counted in `drops` (samples); so the lag stays bounded.
-/// - An empty queue plays zeros. They count in `underruns` only when the gate is not `paused`:
-///   a paused gate emits nothing.
+/// The monitor's fill (D4; coach review 7, hardware reviews Q8, B1, B2). Real-time safe.
+/// - The bounds follow the callbacks: the target is at least one output buffer plus a block,
+///   the ceiling at least the target plus an output buffer, the largest input burst
+///   ([`crate::live::MAX_PART`]) and a block, so large device buffers do not drop and underrun
+///   all the time.
+/// - It plays nothing until the target waits (priming), and primes again after an underrun.
+/// - Above the ceiling it drops whole `block`s, the oldest, rounded down so at least the target
+///   remains, counted in `drops` (samples).
+/// - An empty queue plays zeros, counted in `underruns` (samples) only when the gate is not
+///   `paused`: a paused gate emits nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn monitor_fill(
     q: &mut Consumer<f32>,
@@ -94,6 +110,9 @@ pub fn monitor_fill(
     underruns: &AtomicU64,
     drops: &AtomicU64,
 ) {
+    let block = block.max(1);
+    let target = target.max(out.len() + block);
+    let ceiling = ceiling.max(target + out.len() + crate::live::MAX_PART + block);
     let waiting = q.slots();
     if !m.primed {
         if waiting < target {
@@ -103,13 +122,13 @@ pub fn monitor_fill(
         m.primed = true;
     }
     if waiting > ceiling {
-        let block = block.max(1);
-        let extra = (waiting - target).div_ceil(block) * block;
-        let extra = extra.min(waiting);
-        if let Ok(chunk) = q.read_chunk(extra) {
+        let extra = ((waiting - target) / block) * block;
+        if extra > 0
+            && let Ok(chunk) = q.read_chunk(extra)
+        {
             chunk.commit_all();
+            drops.fetch_add(extra as u64, Ordering::Relaxed);
         }
-        drops.fetch_add(extra as u64, Ordering::Relaxed);
     }
     let mut short = 0u64;
     for v in out.iter_mut() {

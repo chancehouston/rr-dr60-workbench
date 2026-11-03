@@ -142,7 +142,8 @@ fn capture_check() {
         LiveCore::new_capture(&req, &[], dev.channels, Channel::Index(0), false).expect("core");
     let gaps = Arc::new(GapCounter::default());
     let c = capture::Capture::start(dev, core, gaps.clone()).expect("start");
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // 1.5 s, so a full second is fed after the start-up (coach review 6).
+    std::thread::sleep(std::time::Duration::from_millis(1500));
     drop(c);
     let mut b = TakeBuilder::default();
     b.drain(&mut q);
@@ -159,9 +160,10 @@ fn capture_check() {
     .expect("render")
     .expect("not cancelled");
     println!(
-        "capture: fed {fed} in 1 s (about {rate}), gaps {}, digital silence {}, incomplete {}, reproduces offline {}",
+        "capture: fed {fed} in 1.5 s (about {}), gaps {}, digital silence {}, incomplete {}, reproduces offline {}",
+        rate as usize * 3 / 2,
         gaps.gaps.load(Ordering::Relaxed),
-        w.silent() || (fed >= rate as usize && b_all_zero(&take.request.input)),
+        w.silent() || (fed > 0 && b_all_zero(&take.request.input)),
         q.state.incomplete.load(Ordering::Relaxed),
         offline.output_sha256 == take.output_sha256
     );
