@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-02
 
-**Status**: Draft. The draft reviews have been applied (coach 1 – 17, hardware B1 – B10), and `/speckit-clarify` answered four questions (2026-11-02). Awaiting the owner's sign-off.
+**Status**: Draft. The draft reviews have been applied (coach 1 – 17, hardware B1 – B10), and `/speckit-clarify` answered four questions (2026-11-02). Signed off by the owner 2026-11-02.
 
 **Input**: User description: "Feature 001 of docs/workbench-plan.md: the offline render session. Open a mono or multichannel audio file at one of the engine's supported host rates; edit every setting through a panel generated at run time from the engine's control manifest; render it through the default one-pass engine in the background with progress and cancel; play the original and the render with an instant A/B switch at the same position; export the render sample for sample with a sidecar (engine version and pinned commit, host rate, seed, every control value by identifier, the input file's name and digest, the tap) and reopen a sidecar to restore the settings."
 
