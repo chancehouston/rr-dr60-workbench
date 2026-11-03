@@ -12,21 +12,21 @@ description: "Tasks for feature 001, the offline render session"
 
 ## Phase 1: Setup
 
-- [ ] T001 Add the dependencies to `Cargo.toml` (workspace) and the two crate manifests:
+- [X] T001 Add the dependencies to `Cargo.toml` (workspace) and the two crate manifests:
   - `core`: `symphonia` 0.6 with `default-features = false` and features `wav`, `aiff`, `flac`, `pcm`; `hound` 3.5; `sha2` 0.11.
   - `app`: `rfd` 0.17; `coreaudio-rs` 0.14 under `[target.'cfg(target_os = "macos")'.dependencies]`.
   - Workspace: `[profile.test.package.rr_dr60] opt-level = 3` (R-09).
-- [ ] T002 [P] Add `core/build.rs`. It reads `../../Cargo.lock`, takes the 40-character sha of the `rr_dr60` package's `git+…#<sha>` source, emits `cargo:rustc-env=RR_DR60_COMMIT=<sha>` and `cargo:rerun-if-changed=../../Cargo.lock`, and panics if the source is missing (R-12). Expose `pub fn engine_commit() -> &'static str` in `core/src/lib.rs`.
-- [ ] T003 [P] Create the module skeletons named in [contracts/core-api.md](contracts/core-api.md): `core/src/{input,panel,render,ab,export,sidecar,monitor,text}.rs`. Each has a module doc and no logic, and `lib.rs` declares them. Move the bootstrap's `kind_label` and `timing_label` into `text.rs`.
+- [X] T002 [P] Add `core/build.rs`. It reads `../../Cargo.lock`, takes the 40-character sha of the `rr_dr60` package's `git+…#<sha>` source, emits `cargo:rustc-env=RR_DR60_COMMIT=<sha>` and `cargo:rerun-if-changed=../../Cargo.lock`, and panics if the source is missing (R-12). Expose `pub fn engine_commit() -> &'static str` in `core/src/lib.rs`.
+- [X] T003 [P] Create the module skeletons named in [contracts/core-api.md](contracts/core-api.md): `core/src/{input,panel,render,ab,export,sidecar,monitor,text}.rs`. Each has a module doc and no logic, and `lib.rs` declares them. Move the bootstrap's `kind_label` and `timing_label` into `text.rs`.
 
 ## Phase 2: Foundational (blocks every story)
 
-- [ ] T004 Write the test support in `core/tests/support/mod.rs`:
+- [X] T004 Write the test support in `core/tests/support/mod.rs`:
   - deterministic stimuli with no OS randomness: a tone that ends with no trailing silence; noise from a fixed xorshift seed; a voiced burst with pauses (a 150 Hz pulse train through a two-pole resonance, 0.4 s on and 0.8 s off);
   - writers to a temporary directory: WAV via hound (i16, i24, i32, f32, 8-bit, A-law header, EXTENSIBLE 20-in-24); a hand-rolled AIFF writer (16, 24 big-endian) and AIFF-C `sowt`; a hand-rolled FLAC writer (STREAMINFO, verbatim subframes, CRC-8 and CRC-16; 16 and 24 bits, and 20 bits for the refusal); an MP3 stub of raw frame-header bytes (R-01);
   - `oracle(settings, engine_values, input_with_tail, block)`, which repeats R-09's calls on a fresh `Pipeline`.
-- [ ] T005 Add `core/src/text.rs` (FR-016). Every workbench string lives here as constants and format functions. On screen use "splices" or "muted regions", never "gate events" (P5).
-- [ ] T006 Add `Panel::from_entries(entries, rate)` and `Panel::new(rate)` = `from_entries(rr_dr60::controls(), rate)` in `core/src/panel.rs`. Build one `ControlRow` per entry in manifest order:
+- [X] T005 Add `core/src/text.rs` (FR-016). Every workbench string lives here as constants and format functions. On screen use "splices" or "muted regions", never "gate events" (P5).
+- [X] T006 Add `Panel::from_entries(entries, rate)` and `Panel::new(rate)` = `from_entries(rr_dr60::controls(), rate)` in `core/src/panel.rs`. Build one `ControlRow` per entry in manifest order:
   - `class`: `Setting` if `control_map::settings_value(&Settings::new(rate), i)` is `Ok`, else `EngineControl` (R-08);
   - `value` at the engine's default reading;
   - `status`: `NotOnOnePass` when `entry.paths` excludes the one-pass, `ReadOnly` for `host_rate_hz`, else `Accepted`.
@@ -42,7 +42,7 @@ description: "Tasks for feature 001, the offline render session"
 
 ### Tests (write first; they must fail)
 
-- [ ] T007 [P] [US1] `core/tests/input.rs` [TR: FR-001, D1, D3, US1 AS4; FR-002; FR-003, US1 AS3]:
+- [X] T007 [P] [US1] `core/tests/input.rs` [TR: FR-001, D1, D3, US1 AS4; FR-002; FR-003, US1 AS3]:
   - `refuses_formats_rates_and_widths`: MP3, A-law, 8-bit, 20-bit FLAC, EXTENSIBLE 20-in-24, f64 and 22.05 kHz are refused, each with an error naming what is supported.
   - `conversion_rules`:
     - edge codes and 2¹⁶-step sweeps per width;
@@ -53,28 +53,28 @@ description: "Tasks for feature 001, the offline render session"
   - `channels_and_mix`: the default is channel 1, every channel is offered, and the mix carries its label.
   - `digests`: SHA-256 of the raw bytes and of the converted f32 LE samples.
   - `counts_non_finite`.
-- [ ] T008 [P] [US1] `core/tests/render_oracle.rs` [TR: FR-007, SC-001, US1 AS1]: for seven rates × {tone, noise, voiced burst} × {drop, mute}, the render equals the whole-call and block-size-1 oracles sample for sample. Assert `recording_counter() == 0`.
-- [ ] T009 [P] [US1] `core/tests/tail.rs` [TR: D7, P12]:
+- [X] T008 [P] [US1] `core/tests/render_oracle.rs` [TR: FR-007, SC-001, US1 AS1]: for seven rates × {tone, noise, voiced burst} × {drop, mute}, the render equals the whole-call and block-size-1 oracles sample for sample. Assert `recording_counter() == 0`.
+- [X] T009 [P] [US1] `core/tests/tail.rs` [TR: D7, P12]:
   - `tail_emits_the_input`: seven rates, hang 50 ms, coder on, drop mode, an input ending on a tone; produced ≥ input + latency.
   - `tail_is_sufficient`: a further second of tail leaves the prefix bit-identical, and the extra output is below −100 dBFS with the defaults and the hiss off. Print the high-Q band-filter figure (reported only).
   - `tail_zero_at_front_taps`.
-- [ ] T010 [P] [US1] `core/tests/readings.rs` [TR: FR-009]:
+- [X] T010 [P] [US1] `core/tests/readings.rs` [TR: FR-009]:
   - every reading of FR-009 (as restated) on known stimuli;
   - `gate_predicate_pinned`: over every `Tap` × `vas.enabled`, a drop-mode burst plus 3 s of silence comes out shorter exactly when `gate_reached` is true (R-07);
   - not-emitted = 0 in mute mode, with the gate bypassed and at front taps;
   - the peak is `max |x|`.
-- [ ] T011 [P] [US1] `core/tests/ab.rs` [TR: FR-010, SC-005]:
+- [X] T011 [P] [US1] `core/tests/ab.rs` [TR: FR-010, SC-005]:
   - hand-built report lists with exact values;
   - input 0 → latency;
   - the final-pause clamp;
   - at seven rates in drop and mute mode, for every position, `map(inverse(i)) ≥ i` and `inverse(map(o)) ≤ o`;
   - "same seconds" is the identity, clamped.
-- [ ] T012 [P] [US1] `core/tests/monitor.rs` [TR: FR-011]: `fill` writes identical left and right buffers equal to the take × volume, writes zeros past the end, swaps a request in at the top of a buffer, and switches the take bit.
-- [ ] T013 [P] [US1] `core/tests/monitor_alloc.rs` [TR: FR-011]: its own binary, with a counting `#[global_allocator]` and `--test-threads=1` documented in the file. Zero allocations and deallocations over 10⁵ `fill` calls with requests and volume changes.
+- [X] T012 [P] [US1] `core/tests/monitor.rs` [TR: FR-011]: `fill` writes identical left and right buffers equal to the take × volume, writes zeros past the end, swaps a request in at the top of a buffer, and switches the take bit.
+- [X] T013 [P] [US1] `core/tests/monitor_alloc.rs` [TR: FR-011]: its own binary, with a counting `#[global_allocator]` and `--test-threads=1` documented in the file. Zero allocations and deallocations over 10⁵ `fill` calls with requests and volume changes.
 
 ### Implementation
 
-- [ ] T014 [US1] Implement `core/src/input.rs` (R-01, R-02, R-15, data-model "Input"):
+- [X] T014 [US1] Implement `core/src/input.rs` (R-01, R-02, R-15, data-model "Input"):
   - `open(path, channel)` streams symphonia packets into the selected channel only, as `Arc<[f32]>` built once;
   - routes by `bits_per_sample`, and for S32 buffers with b < 32 checks the low bits are zero and shifts arithmetically right;
   - converts with `convert_i16`, `convert_i24` (calls `samples_from_i24`), `convert_i32`, and the mix;
@@ -82,14 +82,14 @@ description: "Tasks for feature 001, the offline render session"
   - computes `raw_sha256`, `input_sha256` and the non-finite and subnormal counts.
 
   Make T007 pass.
-- [ ] T015 [US1] Implement `core/src/render.rs` (R-07, R-09, data-model "Render"):
+- [X] T015 [US1] Implement `core/src/render.rs` (R-07, R-09, data-model "Render"):
   - `gate_reached(&Settings)` quotes `paths.rs:204-206` at `a06318c` in its doc comment and cites rr-dr60-emu#72.
   - `render(req, progress, cancel)` builds a fresh `Pipeline::new`, asserts the counter, applies the engine values in order, sets T = latency + drain (0 at the front taps; cites rr-dr60-emu#73), calls `process_with_events` in 4096 blocks with `max_events(4096)`-sized reports, appends `output[..produced]`, and collects the readings, the reports, the peak, the output digest and the footprint.
   - Cancel is checked per block, and progress is the input consumed.
 
   Make T008 – T010 pass.
-- [ ] T016 [US1] Implement `core/src/ab.rs` (R-06): `to_original` via `onepass_output_to_input`; `to_render` by binary search on the unclamped key `o + removed(o)` ≥ i + L; clamp to the target's end. Make T011 pass.
-- [ ] T017 [US1] Implement `core/src/monitor.rs` (R-05): `Shared` atomics, `Takes` (`Arc<[f32]>` clones) and `fill(takes, shared, left, right)`. Make T012 and T013 pass.
+- [X] T016 [US1] Implement `core/src/ab.rs` (R-06): `to_original` via `onepass_output_to_input`; `to_render` by binary search on the unclamped key `o + removed(o)` ≥ i + L; clamp to the target's end. Make T011 pass.
+- [X] T017 [US1] Implement `core/src/monitor.rs` (R-05): `Shared` atomics, `Takes` (`Arc<[f32]>` clones) and `fill(takes, shared, left, right)`. Make T012 and T013 pass.
 - [ ] T018 [US1] Implement `app/src/playback.rs` (macOS, R-04):
   - a `DefaultOutput` unit with a 2-channel non-interleaved f32 client format at the take's rate on the input scope;
   - `kAudioUnitProperty_SampleRateConverterComplexity` = Mastering;

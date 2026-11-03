@@ -10,6 +10,13 @@ publish.workspace = true
 
 [dependencies]
 rr_dr60.workspace = true
+symphonia.workspace = true
+hound.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+hound.workspace = true

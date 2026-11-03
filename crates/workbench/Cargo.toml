@@ -12,6 +12,10 @@ publish.workspace = true
 workbench_core.workspace = true
 rr_dr60.workspace = true
 eframe.workspace = true
+rfd.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs.workspace = true
 
 [lints]
 workspace = true
