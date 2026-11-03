@@ -90,7 +90,7 @@ description: "Tasks for feature 001, the offline render session"
   Make T008 – T010 pass.
 - [X] T016 [US1] Implement `core/src/ab.rs` (R-06): `to_original` via `onepass_output_to_input`; `to_render` by binary search on the unclamped key `o + removed(o)` ≥ i + L; clamp to the target's end. Make T011 pass.
 - [X] T017 [US1] Implement `core/src/monitor.rs` (R-05): `Shared` atomics, `Takes` (`Arc<[f32]>` clones) and `fill(takes, shared, left, right)`. Make T012 and T013 pass.
-- [ ] T018 [US1] Implement `app/src/playback.rs` (macOS, R-04):
+- [X] T018 [US1] Implement `app/src/playback.rs` (macOS, R-04):
   - a `DefaultOutput` unit with a 2-channel non-interleaved f32 client format at the take's rate on the input scope;
   - `kAudioUnitProperty_SampleRateConverterComplexity` = Mastering;
   - a render callback that calls only `monitor::fill`;
@@ -99,7 +99,7 @@ description: "Tasks for feature 001, the offline render session"
   - `stop()` before the takes are dropped.
 
   On other platforms, a stub that reports `text::PLAYBACK_UNAVAILABLE`.
-- [ ] T019 [US1] Build the US1 view in `app/src/main.rs`:
+- [X] T019 [US1] Build the US1 view in `app/src/main.rs`:
   - Open (rfd) and the channel picker;
   - Render, with progress and Cancel on a `std::thread` with the atomics;
   - the readings panel (FR-009 labels from `text`; "gate not reached");
@@ -140,7 +140,7 @@ description: "Tasks for feature 001, the offline render session"
 
   Map each refusal to its row (using `setting_control` where the engine names a field), and to both rows for the tap and the route. Make T020 pass.
 - [X] T022 [US2] Implement staleness in `core/src/render.rs` or the session type: a render is stale when the panel snapshot, the channel, `input_sha256` or the tail choice differ from `render.request` (D5).
-- [ ] T023 [US2] Build the panel view in `app/src/main.rs`:
+- [X] T023 [US2] Build the panel view in `app/src/main.rs`:
   - stage groups in manifest order;
   - an editor per value type: a switch toggle, an integer field, a continuous drag or field showing the unit, a choice drop-down of the options;
   - the disabled reason;
@@ -178,25 +178,25 @@ description: "Tasks for feature 001, the offline render session"
   - the size refusal (R-03).
 
   Make T024 and T025's `reproduces` pass.
-- [ ] T028 [US3] Build the export and reopen view in `app/src/main.rs`: Export (rfd save, overwrite confirm) and Open sidecar, with the `RestoreReport` shown as a list.
+- [X] T028 [US3] Build the export and reopen view in `app/src/main.rs`: Export (rfd save, overwrite confirm) and Open sidecar, with the `RestoreReport` shown as a list.
 
 **Checkpoint**: US3's tests pass, and desk steps 7, 8 and 13 work.
 
 ## Phase 6: Polish & cross-cutting
 
-- [ ] T029 [P] `core/tests/reach.rs` [TR: FR-017] (R-14):
+- [X] T029 [P] `core/tests/reach.rs` [TR: FR-017] (R-14):
   - `cargo metadata` → the pinned `rr_dr60`;
   - scan every `.rs` file for `pub fn` in `impl Pipeline`, excluding `#[doc(hidden)]` items and `__` names;
   - scan `crates/*/src` for `.name(` and `Pipeline::name(`;
-  - print `called/total` and the uncalled list (expect 15/74);
+  - print `called/total` and the uncalled list (expect 12/70);
   - assert the spec's Engine reach list.
-- [ ] T030 [P] `core/tests/wording.rs` [TR: FR-016] (R-13): parse `DENYLIST_STEMS`, `DENYLIST_PHRASES` and the suffix set from the pinned harness's `manifest_checks.rs` (fail on a parse failure), add the supplementary list (accurate, reveal, uncover, hidden voice, measured except "not measured"), and check every `text` string. Enumerate the strings with a `text::all()` list kept beside them, plus a source scan proving that `app/src` has no string literal outside `text`.
-- [ ] T031 [P] `core/tests/source_scan.rs` [TR: FR-015]: no `SystemTime`, `rand`, `getrandom` or `thread_rng` in `crates/*/src`, and `Instant` only in the progress throttle.
-- [ ] T032 [P] `core/tests/edge.rs` [TR: SC-006, edge cases]: `empty_file`, `metadata_and_many_channels` (a 10-channel WAV with LIST chunks), `non_finite_counted` (NaN, ±inf and subnormals counted and passed unchanged), `refusals_leave_session_unchanged` (format, rate, value, tap and route, sidecar, export size).
-- [ ] T033 [P] `core/tests/render_speed.rs` [TR: SC-004]: `#[ignore]`, release only. One minute at 48 kHz renders in under 10 s, with the time printed.
-- [ ] T034 [P] Add `core/examples/desk_files.rs`, which writes the quickstart's desk files into a given folder (the folder is ignored by `.gitignore`).
-- [ ] T035 Update `README.md` (status, the dependency license note for symphonia's MPL-2.0, macOS-only playback), `CLAUDE.md` (status, the lessons learned) and `CHANGELOG.md` (001's entry).
-- [ ] T036 Run the gate: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, `cargo test -p workbench_core --test monitor_alloc -- --test-threads=1`, and the release `render_speed`. Record the figures in `specs/001-offline-render-session/records.md`.
+- [X] T030 [P] `core/tests/wording.rs` [TR: FR-016] (R-13): parse `DENYLIST_STEMS`, `DENYLIST_PHRASES` and the suffix set from the pinned harness's `manifest_checks.rs` (fail on a parse failure), add the supplementary list (accurate, reveal, uncover, hidden voice, measured except "not measured"), and check every `text` string. Enumerate the strings with a `text::all()` list kept beside them, plus a source scan proving that `app/src` has no string literal outside `text`.
+- [X] T031 [P] `core/tests/source_scan.rs` [TR: FR-015]: no `SystemTime`, `rand`, `getrandom` or `thread_rng` in `crates/*/src`, and `Instant` only in the progress throttle.
+- [X] T032 [P] `core/tests/edge.rs` [TR: SC-006, edge cases]: `empty_file`, `metadata_and_many_channels` (a 10-channel WAV with LIST chunks), `non_finite_counted` (NaN, ±inf and subnormals counted and passed unchanged), `refusals_leave_session_unchanged` (format, rate, value, tap and route, sidecar, export size).
+- [X] T033 [P] `core/tests/render_speed.rs` [TR: SC-004]: `#[ignore]`, release only. One minute at 48 kHz renders in under 10 s, with the time printed.
+- [X] T034 [P] Add `core/examples/desk_files.rs`, which writes the quickstart's desk files into a given folder (the folder is ignored by `.gitignore`).
+- [X] T035 Update `README.md` (status, the dependency license note for symphonia's MPL-2.0, macOS-only playback), `CLAUDE.md` (status, the lessons learned) and `CHANGELOG.md` (001's entry).
+- [X] T036 Run the gate: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, `cargo test -p workbench_core --test monitor_alloc -- --test-threads=1`, and the release `render_speed`. Record the figures in `specs/001-offline-render-session/records.md`.
 - [ ] T037 Post-implementation reviews: `speckit-coach` and `hw-emulation-reviewer` on the branch. Apply the findings at their defaults, and record them in `records.md`.
 
 ## Dependencies

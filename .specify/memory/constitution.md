@@ -31,8 +31,8 @@ from the engine, would mean evaluating the workbench instead.
 
 ### II. Everything Reachable
 
-- By the end of the plan of record, every public method of `rr_dr60::Pipeline` (74 at engine 0.92.0, not counting the engine's hidden
-  test hooks, which no caller can reach)
+- By the end of the plan of record, every public method of `rr_dr60::Pipeline` (70 at engine 0.92.0, not counting the engine's eleven
+  hidden `__` test hooks, which no caller can reach)
   and every `Tap` MUST be reachable from the window. Each feature MUST state which methods it brings
   into use. A test MUST compare the engine's public `Pipeline` methods with the workbench's calls
   and print the ratio.
@@ -127,9 +127,12 @@ Rationale: the repository is public, and its screenshots and notes may be quoted
   expanded principles or sections, and PATCH for clarifications.
 - Every spec, plan and pull request MUST be checked for compliance (the plan's Constitution Check).
 
-**Version**: 1.0.1 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-02
+**Version**: 1.0.2 | **Ratified**: 2026-11-02 | **Last Amended**: 2026-11-02
 
 Amendment 1.0.1 (2026-11-02, PATCH; spec 001 plan P9, P10): principle I names the boundary
 conversions (the channel mix into the engine's input; on playback only, the monitor volume, the
 copy to the device's channels and the operating system's rate conversion), and principle II counts
 74 `Pipeline` methods at 0.92.0, not counting the hidden test hooks.
+
+Amendment 1.0.2 (2026-11-02, PATCH; spec 001 implementation): the count is 70, not 74. The engine has
+eleven hidden test hooks, not seven (81 − 11), as the reach test counts them.

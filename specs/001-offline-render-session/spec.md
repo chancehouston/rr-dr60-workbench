@@ -26,6 +26,12 @@
 - Engine reach: `process` and `reconfigure` are added, because the check engine uses both (research R-08), and the denominator excludes the engine's hidden test hooks (research R-14).
 - D7, the tail: it is 0 at the taps before the gate, where the engine has no latency and nothing after the gate runs (plan P12).
 
+### Session 2026-11-02 (implementation: dated restatements)
+
+- Engine reach: the engine has **70** public `Pipeline` methods at 0.92.0, not counting its **eleven** `__` test hooks (81 − 11; the plan review counted seven, so 74). The workbench calls 12 of them directly: `new`, `process`, `process_with_events`, `reconfigure`, `latency_samples`, `drain_samples`, `max_events`, `settings`, `control_value`, `set_control_value`, `recording_counter`, `footprint_bytes`. The component slot's `set_component`, `set_component_parameter` and `component_parameter_value` are reached through the by-index `set_control_value` and `control_value` (engine spec 025), not called directly, so they are not in the 12.
+- D7's tail check: the bound after the tail is −100 dBFS with the speech coder off (it reads about −320 dBFS). With the coder on, the bound is the coder's own output on digital silence, because its idle output is quiet but not zero. It reads about 1e-4 after the tail, against about 1.1e-3 on silence.
+- FR-016's check runs the denylist over every string literal in the workbench's sources and over `text::all()`, rather than banning literals outside `text`.
+
 ## Decisions for sign-off
 
 Read this section first. Each row gives the recommendation, and the Assumptions section lists the alternatives. Rows marked † were changed or added by the draft reviews.
@@ -144,7 +150,7 @@ The user exports a render with its sidecar, to share it or quote it in an issue.
 
 ### Engine reach
 
-- `Pipeline`: `new`, `process`, `process_with_events`, `reconfigure`, `latency_samples`, `drain_samples`, `max_events`, `settings`, `control_value`, `set_control_value`, `set_component`, `set_component_parameter`, `component_parameter_value`, `recording_counter`, `footprint_bytes`.
+- `Pipeline` (called directly): `new`, `process`, `process_with_events`, `reconfigure`, `latency_samples`, `drain_samples`, `max_events`, `settings`, `control_value`, `set_control_value`, `recording_counter`, `footprint_bytes`. The component slot's `set_component`, `set_component_parameter` and `component_parameter_value` are reached through `set_control_value` and `control_value` by index (restated 2026-11-02).
 - Every `Tap` value, through the tap control.
 - Outside `Pipeline`: `controls()`, `Settings::validate`, the settings-by-index read and write, `setting_control`, `input::samples_from_i24` and `timeline::onepass_output_to_input`.
 

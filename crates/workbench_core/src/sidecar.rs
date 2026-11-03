@@ -206,9 +206,14 @@ pub fn write(input: &Input, render: &Render) -> String {
     kv("render.not_emitted", &render.not_emitted.to_string());
     kv("render.peak", &fmt_f32(render.peak));
     kv("render.sha256", &hex(&render.output_sha256));
+    // Settings as the engine holds them after construction (`Pipeline::settings`), so a value is
+    // written as the engine reads it back.
+    let settings = engine
+        .as_ref()
+        .map_or(req.settings, |p| *rr_dr60::Pipeline::settings(p));
     for (i, e) in rr_dr60::controls::controls().iter().enumerate() {
         let i = i as u32;
-        let reading = control_map::settings_value(&req.settings, i)
+        let reading = control_map::settings_value(&settings, i)
             .ok()
             .or_else(|| engine.as_ref().and_then(|p| p.control_value(i).ok()));
         if let Some(r) = reading {

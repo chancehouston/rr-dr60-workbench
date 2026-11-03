@@ -23,8 +23,8 @@ mod mac {
     };
     use objc2_core_audio::{
         AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectPropertyAddress,
-        AudioObjectRemovePropertyListener, kAudioDevicePropertyDeviceIsAlive,
-        kAudioDevicePropertyNominalSampleRate, kAudioDeviceProcessorOverload,
+        AudioObjectRemovePropertyListener, kAudioDeviceProcessorOverload,
+        kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyNominalSampleRate,
         kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyElementMain,
         kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
     };
@@ -58,7 +58,10 @@ mod mac {
 
     /// The current default output device.
     pub fn default_device() -> Option<u32> {
-        get::<u32>(kAudioObjectSystemObject as u32, kAudioHardwarePropertyDefaultOutputDevice)
+        get::<u32>(
+            kAudioObjectSystemObject as u32,
+            kAudioHardwarePropertyDefaultOutputDevice,
+        )
     }
 
     /// Whether a device is still alive.
@@ -139,7 +142,12 @@ mod mac {
                 } == 0;
             }
             unit.start().map_err(|e| e.to_string())?;
-            Ok(Self { unit, shared, device, listening })
+            Ok(Self {
+                unit,
+                shared,
+                device,
+                listening,
+            })
         }
 
         /// The device playback started on.
@@ -190,7 +198,9 @@ impl Playback {
     pub fn start(takes: Takes, shared: Arc<Shared>) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         {
-            Ok(Self { player: mac::Player::start(takes, shared)? })
+            Ok(Self {
+                player: mac::Player::start(takes, shared)?,
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {

@@ -226,13 +226,13 @@ and over the render's f32 little-endian bytes. hound keeps the bits, so the dige
 
 - **What it does**: the test runs `cargo metadata`, scans **every** `.rs` file of the pinned
   `rr_dr60` for `pub fn` items inside `impl Pipeline` blocks, and excludes `#[doc(hidden)]` items
-  and names starting with `__`. That leaves **74 at 0.92.0**: 81 minus the seven hidden test hooks,
+  and names starting with `__`. That leaves **70 at 0.92.0** (restated at implementation; 81 minus the eleven hidden `__` test hooks, not seven),
   which can never be reached.
 - **Counting calls**: it scans `crates/*/src` for `.name(` and `Pipeline::name(`, then prints
   `called / total` and the uncalled list.
 - **What it asserts**: the spec's Engine reach list, restated with `process` and `reconfigure` (the
   check engine uses both), so 15 methods. The ratio itself is not asserted before feature 006.
-  The expected print at 001 is **15/74**.
+  The expected print at 001 is **12/70**.
 
 ## R-15 Long files and memory
 

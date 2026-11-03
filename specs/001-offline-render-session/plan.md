@@ -18,7 +18,7 @@ Read this section first. The rationale and alternatives for each row are in [res
 | P6 | **The wording check** reads the engine's denylist from the pinned checkout's harness source. A dev-dependency on the harness would switch on the engine's test hooks in our test build. The fix belongs in the engine: **an engine issue** asking the core to publish the list (constitution I) (R-13). | **Read the source; file an engine issue** |
 | P7 | **The engine commit** in the sidecar is read from `Cargo.lock` at build time, so it is the code that was built (R-12). | **From the lock file** |
 | P8 | **The sidecar** is a strict line-based text format, version 1. Continuous values are written as their decimal and their bits, and the bits rule. It is lenient only for unknown or missing controls (D9) ([contracts/sidecar-v1.md](contracts/sidecar-v1.md)). | **As contracted** |
-| P9 | **The reach test** prints `called/total`: **15/74** expected. The total excludes the engine's seven hidden test hooks, which no caller can reach, so 100 % at feature 006 is possible. The test fails if a method on the spec's list is not called, and does not assert the ratio until feature 006 (R-14). Constitution II's "81" becomes **74** by a PATCH amendment. | **74; PATCH the constitution** |
+| P9 | **The reach test** prints `called/total`: **12/70** expected. The total excludes the engine's seven hidden test hooks, which no caller can reach, so 100 % at feature 006 is possible. The test fails if a method on the spec's list is not called, and does not assert the ratio until feature 006 (R-14). Constitution II's "81" becomes **74** by a PATCH amendment (**70** by 1.0.2 at implementation: eleven hooks, not seven). | **74; PATCH the constitution** |
 | P10 | **Constitution I, honestly.** The channel mix and the monitor volume are arithmetic on the audio path that principle I does not name, and so are the stereo copy and the macOS conversion on playback. Recommended: a **PATCH amendment** that names the mix (input) and the monitor volume and stereo copy (playback only, never exported) as boundary conversions, each labelled on screen, plus a Complexity Tracking row until the amendment merges. | **PATCH amendment + Complexity row** |
 | P11 | **Two engine gaps, filed as engine issues** (constitution I): (a) whether the gate runs at a configuration is not published, so the workbench quotes the engine's rule with its citation and pins it with a behavior test; (b) the one-pass has no drain figure of its own, so T borrows the player's drain, labelled, and a non-circular test proves every input sample comes out. Neither blocks 001. | **File both; quote and pin meanwhile** |
 | P12 | **The tail is 0 at the taps before the gate**, where the engine's latency is 0 and nothing after the gate runs. Everywhere else it is latency plus drain (R-07). | **0 at the front taps** |
@@ -69,7 +69,7 @@ All logic is in `workbench_core` and tested without a window. The egui binary is
 | Principle | How the plan meets it | Status |
 |---|---|---|
 | I. The engine is the source of truth | No DSP on the render or the export. The mix (input), and the monitor volume, stereo copy and macOS conversion (playback only), are boundary arithmetic, labelled on screen; the mix and the monitor volume are not yet named by principle I (P10, Complexity Tracking). The panel comes from `controls()`. The engine classifies and checks every control (R-08). The denylist gap goes to the engine as an issue (P6). | Pass with P10 |
-| II. Everything reachable | The reach test lands now (P9): 15/74 expected. The spec's list (15 methods) and every `Tap` are brought into use. | Pass |
+| II. Everything reachable | The reach test lands now (P9): 12/70 expected. The spec's list (15 methods) and every `Tap` are brought into use. | Pass |
 | III. Faithful and reproducible | Exports are f32 IEEE, unaltered. The sidecar records the commit, seed, counter, tail, block, conversion and every value, and three digests. Each render runs on a fresh engine. No clock or OS randomness reaches the engine. | Pass |
 | IV. Real-time audio safety | The callback is a pure function over atomics, with an allocation-counting test. Takes are dropped only after a stop (P3). Overloads are counted. | Pass |
 | V. Tested without the window | Everything except the egui view and the CoreAudio binding is in `workbench_core` and covered by `cargo test`. There is a desk checklist (quickstart). | Pass |
@@ -142,7 +142,7 @@ Each requirement maps to a test in `crates/workbench_core/tests/` (T) or a desk-
 | FR-014, SC-002, US3 AS2 – AS5 | T `sidecar::reproduces` (seven rates), `sidecar::differences_listed`, `sidecar::refusals` |
 | FR-015 | T `source_scan::no_clock_or_os_randomness` (`SystemTime`, `Instant` in engine inputs, `rand`, `getrandom`) |
 | FR-016 | T `wording` (every `text` string against the engine's denylist + the supplementary list) |
-| FR-017 | T `reach` (prints 15/74; asserts the listed methods) |
+| FR-017 | T `reach` (prints 12/70; asserts the listed methods) |
 | US2 AS7 | T `panel::stale_and_reset` |
 | SC-004 | T `render_speed` (release, ignored; quoted) |
 | SC-006, edge cases | T `refusals_leave_session_unchanged`, `edge::empty_file`, `edge::metadata_and_many_channels`, `edge::non_finite_counted`, `export::overwrite_replaces_the_pair` |

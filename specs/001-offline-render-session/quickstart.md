@@ -11,8 +11,10 @@ from GitHub at the pinned commit).
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features                      # every FR/SC test named in tasks.md
-cargo test -p workbench_core --test reach -- --nocapture     # prints "Pipeline reach: 15/74" and the uncalled list
+cargo test -p workbench_core --test reach -- --nocapture     # prints "Pipeline reach: 12/70" and the uncalled list
 cargo test -p workbench_core --release --test render_speed -- --ignored --nocapture   # SC-004
+cargo test -p workbench_core --test monitor_alloc -- --test-threads=1                 # FR-011
+cargo run -p rr_dr60_workbench --bin playback_check   # silent CoreAudio check (macOS)
 ```
 
 Expected:

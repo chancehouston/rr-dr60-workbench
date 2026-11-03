@@ -25,7 +25,7 @@ fn refuses_formats_rates_and_widths() {
         Err(OpenError::UnsupportedFormat(_))
     ));
     // 8-bit WAV.
-    let codes: Vec<i32> = (0..400).map(|i| (i % 256) as i32).collect();
+    let codes: Vec<i32> = (0..400).map(|i| i % 256).collect();
     let w8 = wav(
         48000,
         1,
@@ -108,7 +108,7 @@ fn conversion_rules() {
     let containers: Vec<(&str, Vec<u8>)> = vec![
         ("wav", wav_i24(48000, &c24)),
         ("aiff", aiff(48000, 24, &c24, false)),
-        ("flac", flac(48000, 24, &[c24.clone()])),
+        ("flac", flac(48000, 24, std::slice::from_ref(&c24))),
     ];
     for (name, bytes) in containers {
         let i = open(bytes, Channel::Index(0)).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -140,7 +140,7 @@ fn conversion_rules() {
             valid: 32,
             extensible: true,
         },
-        &le_codes(&[c32.clone()], 4),
+        &le_codes(std::slice::from_ref(&c32), 4),
         false,
     );
     let i = open(w, Channel::Index(0)).unwrap();
