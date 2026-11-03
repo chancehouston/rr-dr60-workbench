@@ -51,8 +51,9 @@ struct LiveRun {
     take: workbench_core::live::TakeBuilder,
     start_req: workbench_core::render::RenderRequest,
     reasons: Vec<Option<&'static str>>,
-    /// The engine's meter reach for the start's request (spec 008 D5).
-    meter_reach: [bool; 13],
+    /// The engine's meter reach for the start's request (spec 008 D5); `None` when the engine
+    /// refused the request (shown as "reach unknown", the review of 008 W7).
+    meter_reach: Option<[bool; 13]>,
 }
 
 /// A render running on its own thread.
@@ -205,7 +206,10 @@ impl Workbench {
         let reasons = (0..rr_dr60::controls::controls().len() as u32)
             .map(|i| workbench_core::live::live_reason(&req, i))
             .collect();
-        let meter_reach = workbench_core::render::meter_reach_for(&req).map_or([true; 13], |r| r.0);
+        let (meter_reach, reach_error) = match workbench_core::render::meter_reach_for(&req) {
+            Ok(r) => (Some(r.0), None),
+            Err(e) => (None, Some(format!("Meter reach unknown: {e}"))),
+        };
         match workbench_core::live::LiveCore::new(&req, &list) {
             Ok((core, queues)) => {
                 let mut core = core;
@@ -221,6 +225,7 @@ impl Workbench {
                             meter_reach,
                         });
                         self.messages.clear();
+                        self.messages.extend(reach_error);
                     }
                     Err(e) => self.messages = vec![e],
                 }
@@ -1807,11 +1812,15 @@ impl Workbench {
                 ui.weak(text::LIVE_SKIPPING);
             }
             // The latest 10 ms row, every field with 002's reach rule (D7, B13).
+            ui.weak("Reach at the start's route (a live route change can move the speaker amplifier's clip count).");
             if let Some(row) = run.take.rows.last() {
                 egui::Grid::new("live meters").show(ui, |ui| {
                     for (i, f) in workbench_core::meters::FIELDS.iter().enumerate() {
                         ui.label(f.id);
-                        if run.meter_reach[i] {
+                        if run.meter_reach.is_none() {
+                            ui.weak("reach unknown");
+                            ui.label("");
+                        } else if run.meter_reach.is_some_and(|m| m[i]) {
                             let v = (f.get)(&row.meters);
                             ui.add(
                                 egui::ProgressBar::new((v as f32 / 2.0).clamp(0.0, 1.0))

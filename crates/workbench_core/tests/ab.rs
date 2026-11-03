@@ -152,3 +152,86 @@ fn the_map_counts_a_splice_at_the_output() {
         );
     }
 }
+
+/// The RMS of `y[lo..hi)` in dBFS (−200 for silence).
+fn level_db(y: &[f32], lo: u64, hi: u64) -> f64 {
+    let s = &y[lo as usize..hi.min(y.len() as u64) as usize];
+    let p = s.iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>() / s.len().max(1) as f64;
+    if p > 0.0 { 10.0 * p.log10() } else { -200.0 }
+}
+
+/// The first output sample at or after `from` whose magnitude exceeds −45 dBFS (above the
+/// hang's hiss, which reads about −72 dBFS RMS), or `None` within `to`.
+fn onset(y: &[f32], from: u64, to: u64) -> Option<u64> {
+    let t = 10f32.powf(-45.0 / 20.0);
+    (from..to.min(y.len() as u64)).find(|&i| y[i as usize].abs() > t)
+}
+
+/// W1 (the independent review of 008): an oracle on the output itself, not on the map's own
+/// arithmetic. With the coder on in drop mode, the gap's splice mark sits on the output's onset
+/// (the hang's silence, then the next burst): the first sample above −45 dBFS lies within C/4 of
+/// the mark (the voice's attack delays it by up to 0.17 C), and the old map's position (the mark without the coder's delay C) is a whole C away.
+#[test]
+fn the_marks_sit_on_the_output_step() {
+    for rate in [6000, 44_100, 48_000] {
+        let b = voiced(rate, 0.4, 0.5);
+        let gap = vec![0.0f32; 3 * rate as usize];
+        let x = [b.clone(), gap, b].concat();
+        let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "drop")));
+        let c = u64::from(r.codec_delay_samples);
+        assert_eq!(c, 180 * u64::from(rate) / 6000, "{rate}: the coder runs");
+        let marks = ab::marks(&r);
+        let splice = marks
+            .iter()
+            .find(|m| m.input_span.1 - m.input_span.0 > u64::from(rate))
+            .expect("the gap's splice");
+        let m = splice.output_position;
+        // The burst's onset in the output, searched from a whole C before the mark.
+        let s = onset(&r.samples, m - c, m + c).expect("the next burst reaches the output");
+        // Within C/4 (the voice's own attack delays the first loud sample by up to 0.17 C).
+        assert!(
+            s.abs_diff(m) <= c / 4,
+            "{rate}: the onset {s} within C/4 of the mark {m}"
+        );
+        assert!(
+            s.abs_diff(m - c) > c / 2,
+            "{rate}: the old map's position {} is not",
+            m - c
+        );
+        assert!(
+            level_db(&r.samples, m - c / 2, m - c / 6) < -60.0,
+            "{rate}: silence before"
+        );
+    }
+}
+
+/// W2: with the coder on in mute mode, a muted region keeps its length, so its end in the
+/// output is its mark plus its input length: the next burst's onset lies within C/4 of it, and
+/// the old map's end (C earlier) does not. (The region's start is the hang's hiss turning into
+/// the decoded muted zeros, a step too gradual through the coder to read sharply.)
+#[test]
+fn the_mute_marks_sit_on_the_output_step() {
+    for rate in [6000, 44_100, 48_000] {
+        let b = voiced(rate, 0.4, 0.5);
+        let gap = vec![0.0f32; 3 * rate as usize];
+        let x = [b.clone(), gap, b].concat();
+        let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "mute")));
+        let c = u64::from(r.codec_delay_samples);
+        let marks = ab::marks(&r);
+        let region = marks
+            .iter()
+            .find(|m| m.input_span.1 - m.input_span.0 > u64::from(rate))
+            .expect("the gap's muted region");
+        let end = region.output_position + (region.input_span.1 - region.input_span.0);
+        let s = onset(&r.samples, end - c, end + c).expect("the next burst reaches the output");
+        assert!(
+            s.abs_diff(end) <= c / 4,
+            "{rate}: the onset {s} within C/4 of the region's end {end}"
+        );
+        assert!(
+            s.abs_diff(end - c) > c / 2,
+            "{rate}: the old map's end {} is not",
+            end - c
+        );
+    }
+}

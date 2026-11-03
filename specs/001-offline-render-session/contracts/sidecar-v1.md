@@ -15,7 +15,7 @@ conversion 1
 recording_counter 0
 block 480                      # informational: the render's block (rate ÷ 100 since 002; 4096 in 001); the output does not depend on it
 tail on                        # the switch: on or off
-tail_samples 6128
+tail_samples 6128               # the engine's one-pass drain (spec 008); in drop mode it holds only while the hang outlasts it
 channel 1                      # 1-based; or: channel mix
 input.file voice.wav           # the rest of the line, verbatim
 input.frames 2880000

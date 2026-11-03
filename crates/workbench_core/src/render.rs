@@ -330,6 +330,20 @@ pub fn meter_reach_for(req: &RenderRequest) -> Result<([bool; 13], [Option<u32>;
     Ok(meter_reach_and_lag(&p))
 }
 
+/// Whether the render's change log holds a route change (the independent review of 008, W5):
+/// the meters' reach is computed once, at the start's route, so after a route change
+/// `amp_clip_count`'s reach (speaker route only) may differ; the meters view labels the reach
+/// "at the start's route" then.
+pub fn route_changes(r: &Render) -> bool {
+    let route = rr_dr60::controls::controls()
+        .iter()
+        .position(|c| c.identifier == "route")
+        .map(|i| i as u32);
+    r.log
+        .iter()
+        .any(|e| Some(e.control) == route && e.before != e.after)
+}
+
 /// The tail for an engine: the engine's one-pass drain (`Pipeline::one_pass_drain_samples`,
 /// engine spec 026 D2; spec 008 D3), the silence that brings every kept sample out and settles
 /// it by the impulse rule while the gate stays open. The `tail` tests show every input sample is
