@@ -95,6 +95,9 @@ pub struct PlayTake {
     pub log: Vec<ChangeEntry>,
     /// The speech coder's frames decoded.
     pub frames: u64,
+    /// The place reached (engine spec 013): the recording's length once the playback has
+    /// reached its end.
+    pub place: u64,
     /// The meter rows (one per 10 ms call; output spans only).
     pub meters: Vec<MeterRow>,
 }
@@ -423,6 +426,7 @@ impl Device {
             tail: false,
         }];
         let mut frames = 0u64;
+        let mut place;
         loop {
             let mut refusal = None;
             due.feed_on(
@@ -449,6 +453,7 @@ impl Device {
             samples.extend_from_slice(&obuf[..info.produced]);
             log.extend_from_slice(&cbuf[..info.changes.min(cbuf.len())]);
             frames += info.frames as u64;
+            place = info.place;
             meters.push(MeterRow {
                 meters: Pipeline::meters(&self.p),
                 in_span: (0, 0),
@@ -468,6 +473,7 @@ impl Device {
             samples,
             log,
             frames,
+            place,
             meters,
         })
     }

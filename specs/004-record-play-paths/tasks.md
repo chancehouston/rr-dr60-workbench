@@ -20,3 +20,9 @@ description: "Tasks for feature 004, the record and play paths"
   - the take: listen, and export (WAV, stored form, playback sidecar).
 - [X] T008 `reach` lists the 004 methods (41/70). Records.
 - [X] T009 Post-implementation review (B1 – B10), applied before the PR (records.md).
+
+## Phase 3: Convergence
+
+- [X] T010 Show the playback take's change log and the place reached in the Device tab, and carry `place` on `PlayTake`, per D6 / FR-006 (partial)
+- [X] T011 Add `playback_changes_logged` (each change logged at its position with its tag and stored value; the place reached equals the item's length) per US2/AC1 (missing)
+- [X] T012 Record that 004 has no `plan.md`: its design decisions are D1 – D7 in the spec and the review records, per plan: artifacts (partial)

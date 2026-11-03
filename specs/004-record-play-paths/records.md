@@ -5,7 +5,7 @@ Recorded on 2026-11-02, with the engine at `a06318c`.
 | Check | Result |
 |---|---|
 | fmt, clippy `-D warnings` | clean |
-| `cargo test --all-features` | 108 green, 3 ignored |
+| `cargo test --all-features` | 109 green, 3 ignored |
 | reach | **41/70** (SC-003: at least 40) |
 | launch | the window runs with an empty log |
 
@@ -32,3 +32,10 @@ Recorded on 2026-11-02, with the engine at `a06318c`.
 - **B8**: `record_changes_twin`: record-side changes against a direct engine that schedules them before one call; the stored forms are byte-identical. The outcome's `fed` is the stop's `stop_input_position` (the stop's own silence excluded, engine spec 020 D9).
 - **B9**: the record and play calls take the schedule list through `record_request` and `play_request`. Readings are for the item last clicked. Listen is labelled "take only".
 - **B10**: the round-trip test's comments state that the speed mode round-trips and the level does not.
+
+## Convergence (T010 – T012)
+
+`/speckit-converge` found three gaps, all closed before the merge:
+- The take view now shows the change log and the place reached (D6).
+- `playback_changes_logged` covers US2 AS1. A logged value is the stored f32, so the test compares it against `value as f32`.
+- 004 has **no `plan.md`**. Under autopilot the design lives in the spec's D1 – D7 and these records. US1 AS3's name `record_refused_when_full` is covered by `memory_full_self_stops` (full) and `record_refused_when_no_slots` (slots).

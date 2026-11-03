@@ -1263,11 +1263,39 @@ impl Workbench {
         if let Some(t) = &self.device_take {
             ui.separator();
             ui.label(format!(
-                "Playback take of item {}: {} samples ({} frames)",
+                "Playback take of item {}: {} samples ({} frames), place reached {}",
                 t.number,
                 t.samples.len(),
-                t.frames
+                t.frames,
+                t.place
             ));
+            egui::CollapsingHeader::new(format!("Change log ({} entries)", t.log.len())).show(
+                ui,
+                |ui| {
+                    egui::Grid::new("take_log").striped(true).show(ui, |ui| {
+                        for h in ["position", "control", "before", "after", "tag"] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+                        for e in &t.log {
+                            ui.label(e.position.to_string());
+                            ui.label(
+                                rr_dr60::controls::controls()
+                                    .get(e.control as usize)
+                                    .map_or("?", |c| c.identifier),
+                            );
+                            ui.label(format!("{}", e.before));
+                            ui.label(format!("{}", e.after));
+                            ui.label(if e.tag == 0 {
+                                "plain".to_owned()
+                            } else {
+                                e.tag.to_string()
+                            });
+                            ui.end_row();
+                        }
+                    });
+                },
+            );
             ui.horizontal(|ui| {
                 if ui.button("Listen (take only)").clicked() {
                     listen = true;

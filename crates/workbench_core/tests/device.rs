@@ -438,3 +438,53 @@ fn playback_start_values_recorded() {
         "the landed volume carried into the next start"
     );
 }
+
+#[test]
+fn playback_changes_logged() {
+    // US2 AS1: each requested change is logged at its landing, in position order, with its
+    // tag; the place reached is the recording's length.
+    for rate in [6000, 48000] {
+        let mut d = Device::new(settings(rate, |_| {})).unwrap();
+        d.record(&voiced(rate, 1.5, 0.5), 0, None, &[]).unwrap();
+        let p = u64::from(rate) / 4;
+        let changes = vec![
+            Scheduled {
+                clock: Clock::Output,
+                position: p,
+                control: idx("volume"),
+                value: 0.4,
+                tag: 1,
+            },
+            Scheduled {
+                clock: Clock::Output,
+                position: 2 * p,
+                control: idx("route"),
+                value: 1.0,
+                tag: 2,
+            },
+            Scheduled {
+                clock: Clock::Output,
+                position: 3 * p,
+                control: idx("battery_volts"),
+                value: 2.5,
+                tag: 3,
+            },
+        ];
+        let take = d.play_to_take(1, &[], &changes).unwrap();
+        let landed: Vec<_> = take.log.iter().filter(|e| e.tag >= 1).collect();
+        assert_eq!(landed.len(), 3, "{rate}");
+        for (e, c) in landed.iter().zip(&changes) {
+            assert_eq!(
+                (e.tag, e.control, e.position),
+                (c.tag, c.control, c.position),
+                "{rate}"
+            );
+            assert_eq!(
+                e.after,
+                f64::from(c.value as f32),
+                "{rate}: the value as stored (f32)"
+            );
+        }
+        assert_eq!(take.place, d.items()[0].length, "{rate}: the place reached");
+    }
+}
