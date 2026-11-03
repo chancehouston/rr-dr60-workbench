@@ -71,6 +71,10 @@ struct Workbench {
     messages: Vec<String>,
     views: views::Views,
     live: Option<LiveRun>,
+    device: Option<workbench_core::device::Device>,
+    device_take: Option<workbench_core::device::PlayTake>,
+    record_start_s: f64,
+    device_item: Option<u32>,
     live_start_s: f64,
     schedule: Vec<(u32, f64, f64)>,
     sched_control: u32,
@@ -93,6 +97,10 @@ impl Workbench {
             messages: Vec::new(),
             views: views::Views::default(),
             live: None,
+            device: None,
+            device_take: None,
+            record_start_s: 0.0,
+            device_item: None,
             live_start_s: 0.0,
             schedule: Vec::new(),
             sched_control: 1,
@@ -430,6 +438,7 @@ impl eframe::App for Workbench {
                     (views::Tab::Meters, "Meters"),
                     (views::Tab::Taps, "Taps"),
                     (views::Tab::Stages, "Stages"),
+                    (views::Tab::Device, "Device"),
                 ] {
                     ui.selectable_value(&mut self.views.tab, t, name);
                 }
@@ -451,6 +460,7 @@ impl eframe::App for Workbench {
                 views::Tab::Meters => self.views.meters(ui, &self.session),
                 views::Tab::Taps => self.views.taps(ui, &self.session),
                 views::Tab::Stages => self.views.stages(ui),
+                views::Tab::Device => self.device_view(ui),
             }
         });
     }
@@ -1056,5 +1066,336 @@ impl Workbench {
                 ui.colored_label(egui::Color32::LIGHT_RED, text::LIVE_INCOMPLETE);
             }
         }
+    }
+}
+
+impl Workbench {
+    /// The device (spec 004): build or reset it from the panel, record the session's input, the
+    /// memory, and play an item to a take.
+    fn device_view(&mut self, ui: &mut egui::Ui) {
+        use workbench_core::device::{self, Device, RecordEnd};
+        let Some(settings) = self.session.plain_request().map(|r| r.settings) else {
+            ui.label("Open a file first: the device uses the panel's values and the file's rate.");
+            return;
+        };
+        ui.horizontal(|ui| {
+            if self.device.is_none() {
+                if ui.button("Build device from the panel").clicked() {
+                    match Device::new(settings) {
+                        Ok(d) => self.device = Some(d),
+                        Err(e) => self.messages = vec![e.to_string()],
+                    }
+                }
+            } else {
+                if ui.button("Apply the panel's settings").clicked()
+                    && let Some(d) = &mut self.device
+                    && let Err(e) = d.sync(settings)
+                {
+                    let mut m = vec![e.to_string()];
+                    if matches!(e, rr_dr60::Error::StoredExceedsCapacity) {
+                        m.push("One memory holds one encoding; erase first".into());
+                    }
+                    self.messages = m;
+                }
+                if ui.button("Reset device (empties the memory)").clicked() {
+                    self.device = Device::new(settings).ok();
+                    self.device_take = None;
+                }
+            }
+        });
+        let Some(dev) = &mut self.device else {
+            return;
+        };
+        let st = dev.status();
+        ui.label(format!(
+            "Memory: {} of {} device samples used ({:.1} of {:.1} s), {} items, {} slots left",
+            st.used_samples,
+            st.capacity_samples,
+            st.used_samples as f64 / 6000.0,
+            st.capacity_samples as f64 / 6000.0,
+            st.count,
+            st.slots_remaining
+        ));
+        ui.horizontal(|ui| {
+            ui.label("record from (s)");
+            ui.add(
+                egui::DragValue::new(&mut self.record_start_s)
+                    .range(0.0..=36_000.0)
+                    .speed(0.1),
+            );
+            if ui.button("Record the session's input").clicked()
+                && let Some(inp) = self.session.input()
+            {
+                let start = (self.record_start_s * f64::from(inp.rate_hz)) as usize;
+                let changes = device::record_request(&self.schedule, inp.rate_hz);
+                self.messages = vec![match dev.record(&inp.samples, start, None, &changes) {
+                    Ok(o) => match o.end {
+                        RecordEnd::Kept { number, length } => {
+                            format!("Recorded item {number}: {length} device samples")
+                        }
+                        RecordEnd::SelfStopped { number, length } => {
+                            format!(
+                                "The memory filled: item {number} kept, {length} device samples"
+                            )
+                        }
+                        RecordEnd::DiscardedEmpty => "Nothing was kept: no item added".into(),
+                    },
+                    Err(e) => e.to_string(),
+                }];
+            }
+        });
+        let items = dev.items();
+        let mut erase = None;
+        let mut export = None;
+        let mut play = None;
+        egui::Grid::new("items").striped(true).show(ui, |ui| {
+            for h in ["item", "length", "counter", "digest", ""] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for it in &items {
+                ui.label(it.number.to_string());
+                ui.label(format!(
+                    "{} ({:.2} s)",
+                    it.length,
+                    it.length as f64 / 6000.0
+                ));
+                ui.label(
+                    it.counter
+                        .map_or_else(|| "imported".to_owned(), |c| c.to_string()),
+                );
+                ui.monospace(format!("{:016x}", it.digest));
+                ui.horizontal(|ui| {
+                    if ui.small_button("readings").clicked() {
+                        self.device_item = Some(it.number);
+                    }
+                    if ui.small_button("play to take").clicked() {
+                        play = Some(it.number);
+                    }
+                    if ui.small_button("export…").clicked() {
+                        export = Some(it.number);
+                    }
+                    if ui.small_button("erase").clicked() {
+                        erase = Some(it.number);
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Erase all").clicked()
+                && let Err(e) = dev.erase_all()
+            {
+                self.messages = vec![e.to_string()];
+            }
+            if ui.button("Import…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("stored form", &["rrdr60"])
+                    .pick_file()
+            {
+                self.messages = vec![match std::fs::read(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| dev.import(&b).map_err(|e| e.to_string()))
+                {
+                    Ok(n) => format!("Imported as item {n}"),
+                    Err(e) => e,
+                }];
+            }
+            if ui.button("Replay a playback sidecar…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("playback sidecar", &["txt"])
+                    .pick_file()
+            {
+                self.messages = replay_messages(&path);
+            }
+        });
+        if let Some(n) = erase
+            && let Err(e) = dev.erase(n)
+        {
+            self.messages = vec![e.to_string()];
+        }
+        if let Some(n) = export
+            && let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!("item{n}.rrdr60"))
+                .save_file()
+        {
+            self.messages = vec![match dev
+                .export(n)
+                .map_err(|e| e.to_string())
+                .and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()))
+            {
+                Ok(()) => format!("Exported item {n} to {}", path.display()),
+                Err(e) => e,
+            }];
+        }
+        if let Some(n) = play {
+            // The playback values from the panel's rows, the schedule list's playback entries.
+            let (values, changes) = match self.session.panel() {
+                Some(p) => device::play_request(p, &self.schedule, dev.settings().host_rate_hz),
+                None => (Vec::new(), Vec::new()),
+            };
+            match dev.play_to_take(n, &values, &changes) {
+                Ok(t) => {
+                    self.messages = vec![format!(
+                        "Played item {n}: {} samples, {} frames, {} changes landed",
+                        t.samples.len(),
+                        t.frames,
+                        t.log.iter().filter(|e| e.tag >= 1).count()
+                    )];
+                    self.device_take = Some(t);
+                }
+                Err(e) => self.messages = vec![e.to_string()],
+            }
+        }
+        if let Some(n) = self
+            .device_item
+            .filter(|n| items.iter().any(|i| i.number == *n))
+            .or_else(|| items.first().map(|i| i.number))
+        {
+            egui::CollapsingHeader::new(format!("Readings of item {n}")).show(ui, |ui| {
+                for (k, v) in dev.readings(n) {
+                    ui.label(format!("{k}: {v}"));
+                }
+            });
+        }
+        let mut listen = false;
+        let mut export_take = false;
+        if let Some(t) = &self.device_take {
+            ui.separator();
+            ui.label(format!(
+                "Playback take of item {}: {} samples ({} frames), place reached {}",
+                t.number,
+                t.samples.len(),
+                t.frames,
+                t.place
+            ));
+            egui::CollapsingHeader::new(format!("Change log ({} entries)", t.log.len())).show(
+                ui,
+                |ui| {
+                    egui::Grid::new("take_log").striped(true).show(ui, |ui| {
+                        for h in ["position", "control", "before", "after", "tag"] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+                        for e in &t.log {
+                            ui.label(e.position.to_string());
+                            ui.label(
+                                rr_dr60::controls::controls()
+                                    .get(e.control as usize)
+                                    .map_or("?", |c| c.identifier),
+                            );
+                            ui.label(format!("{}", e.before));
+                            ui.label(format!("{}", e.after));
+                            ui.label(if e.tag == 0 {
+                                "plain".to_owned()
+                            } else {
+                                e.tag.to_string()
+                            });
+                            ui.end_row();
+                        }
+                    });
+                },
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Listen (take only)").clicked() {
+                    listen = true;
+                }
+                if ui.button("Export take…").clicked() {
+                    export_take = true;
+                }
+            });
+        }
+        let listen_takes = if listen {
+            match (&self.device_take, self.session.input()) {
+                (Some(t), Some(inp)) => Some((
+                    inp.samples.clone(),
+                    Arc::<[f32]>::from(t.samples.clone()),
+                    inp.rate_hz,
+                )),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((original, render, rate_hz)) = listen_takes {
+            self.stop_playback();
+            let takes = Takes {
+                original,
+                render,
+                rate_hz,
+            };
+            match Playback::start(takes, self.shared.clone()) {
+                Ok(p) => {
+                    self.playback = Some(p);
+                    self.shared.request(Take::Render, 0);
+                    self.shared.playing.store(true, Ordering::Relaxed);
+                }
+                Err(e) => self.messages = vec![e],
+            }
+        }
+        if export_take
+            && let (Some(t), Some(dev)) = (&self.device_take, &self.device)
+            && let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!("item{}-playback.wav", t.number))
+                .save_file()
+        {
+            let base = path.with_extension("");
+            let stored_path = base.with_extension("rrdr60");
+            let result = dev
+                .export_take(t)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    use sha2::{Digest, Sha256};
+                    let sha: [u8; 32] = Sha256::digest(&bytes).into();
+                    std::fs::write(&stored_path, &bytes).map_err(|e| e.to_string())?;
+                    let wav = export::wav_bytes(&t.samples, t.settings.host_rate_hz)
+                        .map_err(|e| e.to_string())?;
+                    std::fs::write(base.with_extension("wav"), wav).map_err(|e| e.to_string())?;
+                    let name = stored_path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    let side = device::playback_sidecar(t, &name, &sha);
+                    let mut sp = base.into_os_string();
+                    sp.push(".playback.txt");
+                    std::fs::write(sp, side).map_err(|e| e.to_string())
+                });
+            self.messages = vec![match result {
+                Ok(()) => {
+                    "Exported the playback take, its stored form and its playback sidecar".into()
+                }
+                Err(e) => e,
+            }];
+        }
+    }
+}
+
+/// Replays a playback sidecar against the stored form named in it, beside the sidecar (D5),
+/// and reports each check.
+fn replay_messages(path: &std::path::Path) -> Vec<String> {
+    use workbench_core::device;
+    let result = std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| device::read_playback(&t))
+        .and_then(|sc| {
+            let stored_path = path.with_file_name(&sc.stored_file);
+            let bytes = std::fs::read(&stored_path)
+                .map_err(|e| format!("{}: {e}", stored_path.display()))?;
+            device::replay(&sc, &bytes)
+        });
+    match result {
+        Ok(r) => vec![
+            if r.reproduces() {
+                format!(
+                    "The take reproduces: {} samples, bit for bit",
+                    r.take.samples.len()
+                )
+            } else {
+                "The take does not reproduce".to_owned()
+            },
+            format!("stored form's SHA-256 matches: {}", r.stored_matches),
+            format!("produced count matches: {}", r.produced_matches),
+            format!("output's SHA-256 matches: {}", r.output_matches),
+        ],
+        Err(e) => vec![e],
     }
 }

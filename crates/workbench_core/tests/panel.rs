@@ -64,7 +64,12 @@ fn not_on_the_one_pass_and_read_only() {
                 "{}",
                 row.entry.identifier
             );
-            assert!(!p.set(row.index, row.value));
+            // Settable since spec 004 (the device uses them); the label stays.
+            assert!(p.set(row.index, row.value), "{}", row.entry.identifier);
+            assert_eq!(
+                p.row(row.entry.identifier).unwrap().status,
+                RowStatus::NotOnOnePass
+            );
         }
     }
     for id in ["memory.capacity_s", "playback_speed", "playback_speed_mode"] {

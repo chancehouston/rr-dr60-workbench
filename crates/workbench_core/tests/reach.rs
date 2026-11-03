@@ -103,7 +103,30 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 19] = [
+const LISTED: [&str; 42] = [
+    "start_recording",
+    "record_with_changes",
+    "stop_recording_with_changes",
+    "max_record_events",
+    "erase",
+    "erase_all",
+    "export_len",
+    "export",
+    "import",
+    "memory_status",
+    "recording_length",
+    "recording_counter_of",
+    "recording_digest",
+    "start_playback",
+    "play_with_changes",
+    "stop_playback",
+    "playback_length_samples",
+    "playback_length_samples_in_mode",
+    "record_latency_samples",
+    "state",
+    "rest_meters",
+    "control_value",
+    "set_control_value",
     "pending_changes",
     "clear_schedule",
     "meters",

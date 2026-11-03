@@ -8,6 +8,7 @@
 pub mod ab;
 pub mod analysis;
 pub mod csv;
+pub mod device;
 pub mod export;
 pub mod input;
 pub mod live;
