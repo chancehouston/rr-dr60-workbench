@@ -136,8 +136,21 @@ impl Session {
         self.range.as_ref()
     }
 
-    /// Accepts a finished live take (spec 003 D5) with the panel's request at the stop, against
-    /// which its staleness is judged.
+    /// Accepts a finished live take (spec 003 D5): the panel takes the take's end values, and its
+    /// staleness is judged against them (post-implementation review B6).
+    pub fn accept_live_take(&mut self, take: Render) -> bool {
+        let end = crate::live::end_values(&take);
+        if let Some(p) = self.panel.as_mut() {
+            p.set_many(&end);
+        }
+        let Some(at_stop) = self.plain_request() else {
+            return false;
+        };
+        self.accept_live(take, at_stop)
+    }
+
+    /// Accepts a finished live take with a given request at the stop, against which its staleness
+    /// is judged.
     pub fn accept_live(&mut self, take: Render, at_stop: RenderRequest) -> bool {
         let ok = self.accept_render(take);
         if ok {
@@ -211,6 +224,18 @@ impl Session {
                 .get("fed")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
+            // An unknown change identifier means the take cannot be reproduced: listed, and the
+            // range is not set (post-implementation review B14).
+            let unknown: Vec<String> = s
+                .changes
+                .iter()
+                .filter(|(_, _, id, _, _)| {
+                    !rr_dr60::controls::controls()
+                        .iter()
+                        .any(|e| e.identifier == id)
+                })
+                .map(|(_, _, id, _, _)| id.clone())
+                .collect();
             let changes = s
                 .changes
                 .iter()
@@ -227,7 +252,13 @@ impl Session {
                     })
                 })
                 .collect();
-            self.range = Some((start, fed, changes));
+            if unknown.is_empty() {
+                self.range = Some((start, fed, changes));
+            } else {
+                let mut rep = rep;
+                rep.unknown_ids.extend(unknown);
+                return Ok(rep);
+            }
         }
         Ok(rep)
     }

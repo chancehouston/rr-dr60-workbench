@@ -211,7 +211,10 @@ pub fn write(render: &Render) -> String {
     kv("engine.commit", crate::engine_commit());
     kv("conversion", &CONVERSION.to_string());
     kv("recording_counter", "0");
-    kv("live", if live.is_some() { "yes" } else { "no" });
+    // A ranged request (a live take, or a re-render of one) is written as live, so its range and
+    // changes survive a second generation (post-implementation review B4).
+    let ranged = live.is_some() || req.start != 0 || req.len.is_some() || !req.changes.is_empty();
+    kv("live", if ranged { "yes" } else { "no" });
     kv("start", &req.start.to_string());
     let avail = (req.input.len() as u64).saturating_sub(req.start);
     kv(

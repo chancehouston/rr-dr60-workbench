@@ -57,6 +57,12 @@ pub struct LiveState {
     pub incomplete: AtomicBool,
     /// Callbacks that ended in a budget skip.
     pub skips: AtomicU64,
+    /// An engine call failed: the run stopped (post-implementation review B2).
+    pub failed: AtomicBool,
+    /// The input is exhausted and the FIFO is empty: every sample has been played (B11).
+    pub drained: AtomicBool,
+    /// Replies lost to a full reply queue (they do not affect the take; B9).
+    pub replies_lost: AtomicU64,
 }
 
 /// The UI's ends of the queues.
@@ -149,7 +155,11 @@ impl LiveCore {
         let avail = (req.input.len() - base) as u64;
         let end = avail + if req.tail { render::tail_for(&p) } else { 0 };
         let block = render::block_for(req.rate_hz).max(1);
-        let list: Vec<Scheduled> = list
+        // Sorted by position (stable), so each clock's entries are in landing order before they
+        // are tagged (post-implementation review B1).
+        let mut sorted: Vec<(Clock, u64, u32, f64)> = list.to_vec();
+        sorted.sort_by_key(|&(_, position, _, _)| position);
+        let list: Vec<Scheduled> = sorted
             .iter()
             .enumerate()
             .map(|(i, &(clock, position, control, value))| Scheduled {
@@ -265,7 +275,7 @@ impl LiveCore {
                 })
                 .is_err()
             {
-                self.mark_incomplete();
+                self.state.replies_lost.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -300,23 +310,35 @@ impl LiveCore {
                     })
                     .is_err()
                 {
-                    state.incomplete.store(true, Ordering::Relaxed);
+                    state.replies_lost.fetch_add(1, Ordering::Relaxed);
                 }
             },
         );
         let info = match res {
             Ok(i) => i,
-            Err(_) => {
-                // A refusal in the callback: the take cannot be reproduced; stop the run.
+            Err(e) => {
+                // A refusal in the callback: the take cannot be reproduced; stop the run and
+                // tell the UI (B2).
                 self.mark_incomplete();
                 self.failed = true;
+                self.state.failed.store(true, Ordering::Relaxed);
+                let _ = self.replies.push(Reply {
+                    tag: 0,
+                    control: 0,
+                    error: Some(e),
+                });
                 return;
             }
         };
-        assert!(
-            info.produced <= n,
-            "the engine emits at most one sample per input sample"
-        );
+        // The engine emits at most one sample per input sample; never panic on the audio thread
+        // (B3).
+        debug_assert!(info.produced <= n);
+        if info.produced > n {
+            self.mark_incomplete();
+            self.failed = true;
+            self.state.failed.store(true, Ordering::Relaxed);
+            return;
+        }
         if info.changes > self.cbuf.len() || info.events > self.ebuf.len() {
             self.mark_incomplete();
         }
@@ -380,6 +402,9 @@ impl LiveCore {
             *v = self.fifo.pop_front().unwrap_or(0.0);
         }
         out[have..].fill(0.0);
+        if self.pos >= self.end && self.fifo.is_empty() {
+            self.state.drained.store(true, Ordering::Relaxed);
+        }
         if have < out.len() && self.pos < self.end && !self.failed {
             // The budget ran out with the gate paused: labelled silence, not engine output.
             self.state.skips.fetch_add(1, Ordering::Relaxed);
@@ -470,6 +495,8 @@ impl TakeBuilder {
         let mut request = start_req.clone();
         request.len = Some(fed);
         request.changes = changes;
+        // The tail switch as the run used it: on only if the input ended (B5).
+        request.tail = start_req.tail && fed > avail;
         let p = render::fresh_engine(&request)?;
         let peak = self.samples.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         let output_sha256 = crate::input::samples_sha256(&self.samples);
@@ -548,4 +575,24 @@ pub fn live_reason(req: &RenderRequest, index: u32) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// The take's values at its end (post-implementation review B6): every applied change (tag ≥ 1)
+/// of the log, last value per control, as the panel should show them after the stop.
+pub fn end_values(take: &Render) -> Vec<(u32, ControlReading)> {
+    let mut out: Vec<(u32, ControlReading)> = Vec::new();
+    for e in take.log.iter().filter(|e| e.tag >= 1) {
+        let Some(entry) = rr_dr60::controls::controls().get(e.control as usize) else {
+            continue;
+        };
+        let reading = match entry.value {
+            ControlValue::Switch { .. } => ControlReading::Switch(e.after != 0.0),
+            ControlValue::Integer { .. } => ControlReading::Integer(e.after as u64),
+            ControlValue::Continuous { .. } => ControlReading::Continuous(e.after as f32),
+            _ => ControlReading::Choice(e.after as u32),
+        };
+        out.retain(|(i, _)| *i != e.control);
+        out.push((e.control, reading));
+    }
+    out
 }

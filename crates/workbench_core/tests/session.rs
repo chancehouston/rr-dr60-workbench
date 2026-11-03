@@ -242,3 +242,77 @@ fn a_live_sidecar_restores_and_reproduces() {
     assert!(s.accept_live(take, s.plain_request().unwrap()));
     assert!(!s.is_stale());
 }
+
+#[test]
+fn restored_range_survives_second_generation() {
+    // Post-implementation review B4: restore a live take, render it, write its sidecar, restore
+    // that, and the range and changes are still there.
+    use rr_dr60::changes::Clock;
+    use workbench_core::live::{LiveCore, TakeBuilder};
+    let d = dir("gen2");
+    let a = d.join("a.wav");
+    stereo(&a, 8000);
+    let mut s = Session::new();
+    s.open(&a, Channel::Index(0)).unwrap();
+    let mut req = s.plain_request().unwrap();
+    req.start = 1000;
+    let vol = rr_dr60::controls::controls()
+        .iter()
+        .position(|e| e.identifier == "volume")
+        .unwrap() as u32;
+    let (mut core, mut q) = LiveCore::new(&req, &[(Clock::Output, 500, vol, 0.5)]).unwrap();
+    let mut b = TakeBuilder::default();
+    let mut buf = vec![0.0f32; 256];
+    for _ in 0..12 {
+        core.fill(&mut buf);
+        b.drain(&mut q);
+    }
+    let take = b.finish(&req, &q.state).unwrap();
+    let mut t = Session::new();
+    t.open(&a, Channel::Index(0)).unwrap();
+    t.restore(&workbench_core::sidecar::write(&take)).unwrap();
+    let gen1 = run(&t.request().unwrap());
+    let mut u = Session::new();
+    u.open(&a, Channel::Index(0)).unwrap();
+    u.restore(&workbench_core::sidecar::write(&gen1)).unwrap();
+    assert_eq!(
+        u.range().map(|r| (r.0, r.1, r.2.len())),
+        Some((1000, take.live.as_ref().unwrap().fed, 1))
+    );
+    let gen2 = run(&u.request().unwrap());
+    assert_eq!(
+        gen2.output_sha256, take.output_sha256,
+        "the second generation reproduces the take"
+    );
+}
+
+#[test]
+fn live_take_accepted_with_its_end_values() {
+    // B6: after a stop, the panel shows the take's end values and the take is not stale.
+    use rr_dr60::changes::Clock;
+    use workbench_core::live::{LiveCore, TakeBuilder};
+    let d = dir("end");
+    let a = d.join("a.wav");
+    stereo(&a, 8000);
+    let mut s = Session::new();
+    s.open(&a, Channel::Index(0)).unwrap();
+    let req = s.plain_request().unwrap();
+    let vol = rr_dr60::controls::controls()
+        .iter()
+        .position(|e| e.identifier == "volume")
+        .unwrap() as u32;
+    let (mut core, mut q) = LiveCore::new(&req, &[(Clock::Output, 200, vol, 0.5)]).unwrap();
+    let mut b = TakeBuilder::default();
+    let mut buf = vec![0.0f32; 256];
+    for _ in 0..8 {
+        core.fill(&mut buf);
+        b.drain(&mut q);
+    }
+    let take = b.finish(&req, &q.state).unwrap();
+    assert!(s.accept_live_take(take));
+    assert_eq!(
+        s.panel().unwrap().row("volume").unwrap().value,
+        rr_dr60::control_map::ControlReading::Continuous(0.5)
+    );
+    assert!(!s.is_stale());
+}

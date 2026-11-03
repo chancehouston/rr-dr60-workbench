@@ -161,16 +161,15 @@ impl Workbench {
         let incomplete = run.queues.state.incomplete.load(Ordering::Relaxed);
         match run.take.finish(&run.start_req, &run.queues.state) {
             Ok(take) => {
-                let at_stop = self.session.plain_request();
-                if let Some(at_stop) = at_stop {
-                    self.session.accept_live(take, at_stop);
-                }
-                self.messages = refused;
+                // The panel takes the take's end values (B6).
+                self.session.accept_live_take(take);
+                self.int_edits.clear();
+                self.messages.extend(refused);
                 if incomplete {
                     self.messages.push(text::LIVE_INCOMPLETE.to_owned());
                 }
             }
-            Err(e) => self.messages = vec![e.to_string()],
+            Err(e) => self.messages.push(e.to_string()),
         }
     }
 
@@ -399,13 +398,16 @@ impl eframe::App for Workbench {
         self.views.poll(&ctx);
         if let Some(run) = &mut self.live {
             run.take.drain(&mut run.queues);
-            let finished = run.queues.state.finished.load(Ordering::Relaxed);
+            // Stop once every sample has been played (B11), on a failure (B2) or a lost device.
+            let drained = run.queues.state.drained.load(Ordering::Relaxed);
+            let failed = run.queues.state.failed.load(Ordering::Relaxed);
             let lost = run.playback.device_lost();
-            if lost {
-                self.messages = vec![text::DEVICE_LOST.to_owned()];
-            }
-            if finished || lost {
+            if drained || failed || lost {
+                self.messages.clear();
                 self.stop_live();
+                if lost {
+                    self.messages.insert(0, text::DEVICE_LOST.to_owned());
+                }
             }
             ctx.request_repaint_after(Duration::from_millis(50));
         }
@@ -897,7 +899,7 @@ impl Workbench {
             let st = &run.queues.state;
             let rate = f64::from(run.start_req.rate_hz);
             ui.label(format!(
-                "Live: fed {:.2} s, produced {:.2} s, pending changes in the engine shown after the stop; skips {}",
+                "Live: fed {:.2} s, produced {:.2} s; skips {}",
                 st.fed.load(Ordering::Relaxed) as f64 / rate,
                 st.produced.load(Ordering::Relaxed) as f64 / rate,
                 st.skips.load(Ordering::Relaxed)
@@ -905,19 +907,30 @@ impl Workbench {
             if st.skips.load(Ordering::Relaxed) > 0 {
                 ui.weak(text::LIVE_SKIPPING);
             }
+            // The latest 10 ms row, every field with 002's reach rule (D7, B13).
             if let Some(row) = run.take.rows.last() {
-                for f in workbench_core::meters::FIELDS.iter().filter(|f| {
-                    matches!(
-                        f.id,
-                        "input_peak" | "gain_reduction_db" | "route_peak" | "vas_paused"
-                    )
-                }) {
-                    ui.label(format!(
-                        "{}: {}",
-                        f.id,
-                        workbench_core::meters::display(f, row, run.start_req.rate_hz)
-                    ));
-                }
+                let route = workbench_core::meters::route_of(&run.start_req.engine_values);
+                egui::Grid::new("live meters").show(ui, |ui| {
+                    for f in &workbench_core::meters::FIELDS {
+                        ui.label(f.id);
+                        if workbench_core::meters::reached(f, &run.start_req.settings, route) {
+                            let v = (f.get)(&row.meters);
+                            ui.add(
+                                egui::ProgressBar::new((v as f32 / 2.0).clamp(0.0, 1.0))
+                                    .desired_width(120.0),
+                            );
+                            ui.label(workbench_core::meters::display(
+                                f,
+                                row,
+                                run.start_req.rate_hz,
+                            ));
+                        } else {
+                            ui.weak("not reached (rest)");
+                            ui.label("");
+                        }
+                        ui.end_row();
+                    }
+                });
             }
         }
         // The schedule list (D3).

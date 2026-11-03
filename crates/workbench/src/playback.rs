@@ -236,8 +236,18 @@ impl Playback {
         #[cfg(target_os = "macos")]
         {
             Ok(Self {
-                player: mac::Player::start_with(rate, shared, move |l, r| {
+                player: mac::Player::start_with(rate, shared.clone(), move |l, r| {
                     core.fill(l);
+                    // The monitor volume, on playback only: the take keeps the engine's samples
+                    // (post-implementation review B12).
+                    let vol = f32::from_bits(
+                        shared
+                            .volume_bits
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    for v in l.iter_mut() {
+                        *v *= vol;
+                    }
                     r.copy_from_slice(l);
                 })?,
             })

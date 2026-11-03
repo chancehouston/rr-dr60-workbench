@@ -24,4 +24,4 @@ Test-first per story, tied to the plan's Traceability.
 - [X] T008 The view: Go live / Stop live with a start position, edits sent as commands, disabled reasons, the latest meter row, the schedule list, the timeline with its CSV, and the incomplete label.
 - [X] T009 `reach` lists the 003 methods (20/70). `live_speed` (release).
 - [X] T010 Records, README, CLAUDE.md, CHANGELOG.
-- [ ] T011 Post-implementation review, applied before the PR.
+- [X] T011 Post-implementation review, applied before the PR.

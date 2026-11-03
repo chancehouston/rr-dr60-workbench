@@ -185,18 +185,36 @@ fn live_disabled_reasons() {
 
 #[test]
 fn live_take_reproduces() {
+    // Post-implementation review B7: per rate, a run stopped after 3 s of input with the gate
+    // pausing, a listed change, and commands in both clocks; reproduced through the parsed
+    // sidecar and a fresh session's restore.
     for rate in RATES {
-        // Long enough that the run is still going when it is stopped by hand at callback 30.
-        let x = voiced(rate, 10.0, 0.5);
-        let req = request(rate, &x, |p| {
-            set_choice(p, "insert.before_limiter", "band_filter");
-            set_num(p, "vas.hang_ms", 100.0);
-        });
+        let b = voiced(rate, 0.4, 0.5);
+        let x: Vec<f32> = (0..8)
+            .flat_map(|_| {
+                b.iter()
+                    .copied()
+                    .chain(std::iter::repeat_n(0.0, rate as usize / 2))
+            })
+            .collect();
+        let path =
+            std::env::temp_dir().join(format!("rr-wb-live-{}-{rate}.wav", std::process::id()));
+        std::fs::write(&path, wav_i24(rate, &to_i24(&x))).unwrap();
+        let mut s = workbench_core::session::Session::new();
+        s.open(&path, workbench_core::input::Channel::Index(0))
+            .unwrap();
+        set_choice(
+            s.panel_mut().unwrap(),
+            "insert.before_limiter",
+            "band_filter",
+        );
+        set_num(s.panel_mut().unwrap(), "vas.hang_ms", 100.0);
+        let req = s.plain_request().unwrap();
         let seed = 0xC0FFEE ^ u64::from(rate);
         let mut rng = Rng(seed);
         let mut commands = Vec::new();
-        for k in 0..12 {
-            let (control, value) = match rng.below(4) {
+        for k in 0..40 {
+            let (control, value) = match k % 4 {
                 0 => (idx("volume"), (rng.below(100) as f64) / 100.0),
                 1 => (idx("vas.threshold_dbfs"), -(30.0 + rng.below(30) as f64)),
                 2 => (idx("route"), rng.below(2) as f64),
@@ -205,45 +223,82 @@ fn live_take_reproduces() {
                     300.0 + rng.below(2000) as f64,
                 ),
             };
-            commands.push((2 + k * 3, Command { control, value }));
+            commands.push((2 + k * 2, Command { control, value }));
         }
-        let list = vec![(Clock::Output, u64::from(rate) / 2, idx("volume"), 0.25)];
-        // Stopped by hand mid-file.
-        let (take, replies) = live_take(&req, &list, &commands, seed, Some(30));
-        assert!(!take.live.as_ref().unwrap().incomplete);
-        let landed = take.log.iter().filter(|e| e.tag >= 1).count();
-        println!(
-            "{rate}: {landed} changes landed, {} replies with errors: {:?}",
-            replies.iter().filter(|r| r.error.is_some()).count(),
-            replies
-                .iter()
-                .filter_map(|r| r.error)
-                .take(3)
-                .collect::<Vec<_>>()
+        let at = u64::from(rate) / 2;
+        let list = vec![(Clock::Output, at, idx("volume"), 0.25)];
+        let (take, _) = live_take_until(&req, &list, &commands, seed, 3 * u64::from(rate));
+        let live = take.live.as_ref().unwrap();
+        assert!(!live.incomplete, "{rate}");
+        assert!(
+            !take.events.is_empty(),
+            "{rate}: the gate paused before the stop"
         );
-        assert!(landed >= 5, "{rate}: changes landed");
+        let listed = take
+            .log
+            .iter()
+            .find(|e| e.tag == 1)
+            .expect("the listed change landed");
+        assert_eq!(listed.position, at, "{rate}: at its position");
+        let clocks: Vec<Clock> = take
+            .log
+            .iter()
+            .filter(|e| e.tag >= 2)
+            .map(|e| rr_dr60::changes::clock_of(e.control).unwrap())
+            .collect();
+        assert!(
+            clocks.contains(&Clock::Input) && clocks.contains(&Clock::Output),
+            "{rate}: both clocks"
+        );
         let text = workbench_core::sidecar::write(&take);
-        let s = workbench_core::sidecar::read(&text).unwrap();
-        assert_eq!(s.version, 2);
-        let inp = input_of(rate, &x);
-        let _ = inp;
-        let re = run(&take.request);
+        let mut t = workbench_core::session::Session::new();
+        t.open(&path, workbench_core::input::Channel::Index(0))
+            .unwrap();
+        let rep = t.restore(&text).unwrap();
+        assert!(
+            rep.refused.is_empty() && rep.unknown_ids.is_empty(),
+            "{rate}: {rep:?}"
+        );
+        let re = run(&t.request().unwrap());
         println!(
-            "{rate} Hz seed {seed:#x}: {} samples, {} changes, {} refused",
+            "{rate} Hz seed {seed:#x}: {} samples, {} changes, {} reports",
             take.samples.len(),
             take.request.changes.len(),
-            replies.iter().filter(|r| r.error.is_some()).count()
+            take.events.len()
         );
         assert_same(&take, &re, &format!("{rate}"));
-        // The sidecar's change lines carry the take's changes exactly.
-        assert_eq!(s.changes.len(), take.request.changes.len());
-        for ((clock, pos, _, v, tag), c) in s.changes.iter().zip(&take.request.changes) {
-            assert_eq!(
-                (*clock, *pos, v.to_bits(), *tag),
-                (c.clock, c.position, c.value.to_bits(), c.tag)
-            );
-        }
     }
+}
+
+/// As `live_take`, stopped once `fed` input samples have been fed.
+fn live_take_until(
+    req: &RenderRequest,
+    list: &[(Clock, u64, u32, f64)],
+    commands: &[(usize, Command)],
+    seed: u64,
+    fed: u64,
+) -> (Render, Vec<workbench_core::live::Reply>) {
+    let (mut core, mut q): (LiveCore, LiveQueues) = LiveCore::new(req, list).unwrap();
+    let mut b = TakeBuilder::default();
+    let mut rng = Rng(seed);
+    let mut buf = vec![0.0f32; 8192];
+    let mut k = 0usize;
+    while q.state.fed.load(std::sync::atomic::Ordering::Relaxed) < fed
+        && !q.state.drained.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        for (at, c) in commands {
+            if *at == k {
+                q.commands.push(*c).unwrap();
+            }
+        }
+        let n = 1 + rng.below(1024) as usize;
+        core.fill(&mut buf[..n]);
+        b.drain(&mut q);
+        k += 1;
+    }
+    b.drain(&mut q);
+    let replies = b.replies.clone();
+    (b.finish(req, &q.state).unwrap(), replies)
 }
 
 #[test]
@@ -312,5 +367,61 @@ fn overflow_marks_incomplete() {
         q.state
             .incomplete
             .load(std::sync::atomic::Ordering::Relaxed)
+    );
+}
+
+#[test]
+fn schedule_unsorted_lands_exactly() {
+    // Post-implementation review B1: a list entered out of order still lands each change at its
+    // position.
+    let rate = 8000;
+    let x = voiced(rate, 2.0, 0.5);
+    let req = request(rate, &x, |_| {});
+    let list = vec![
+        (Clock::Output, 8000, idx("volume"), 0.7),
+        (Clock::Output, 2000, idx("volume"), 0.3),
+    ];
+    let (take, _) = live_take(&req, &list, &[], 4, None);
+    let landed: Vec<(u64, f64)> = take
+        .log
+        .iter()
+        .filter(|e| e.tag >= 1)
+        .map(|e| (e.position, e.after))
+        .collect();
+    assert_eq!(
+        landed,
+        vec![(2000, f64::from(0.3f32)), (8000, f64::from(0.7f32))]
+    );
+}
+
+#[test]
+fn take_tail_switch_and_end_values() {
+    // B5: a take stopped mid-file has the tail switch off; B6: its end values are the last
+    // applied value per control, and a refused command never reaches them.
+    let rate = 16000;
+    let x = voiced(rate, 5.0, 0.5);
+    let req = request(rate, &x, |_| {});
+    assert!(req.tail);
+    let list = vec![(Clock::Output, 4000, idx("volume"), 0.25)];
+    let bad = Command {
+        control: idx("volume"),
+        value: 7.0,
+    }; // out of range: refused
+    let (take, replies) = live_take(&req, &list, &[(3, bad)], 21, Some(10));
+    assert!(
+        replies.iter().any(|r| r.error.is_some()),
+        "the bad command is refused"
+    );
+    assert!(
+        !take.request.tail,
+        "stopped mid-file: the tail switch is off"
+    );
+    let end = workbench_core::live::end_values(&take);
+    assert_eq!(
+        end,
+        vec![(
+            idx("volume"),
+            rr_dr60::control_map::ControlReading::Continuous(0.25)
+        )]
     );
 }

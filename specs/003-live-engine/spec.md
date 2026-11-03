@@ -15,6 +15,15 @@
 - **The microphone is deferred** to a later feature (coach 12). It brings a second device clock, and drift between two devices makes gaps certain on long runs. The hardware review's design is recorded for it: run the engine in the input callback, so the input clock drives it and the take has no gaps.
 - **About 10 ms of added latency is accepted**, so that the live meter rows equal 002's (coach 7).
 
+### Session 2026-11-02 (post-implementation review: dated restatements)
+
+- **D6, the timeline**: a list beside the waveform (changes, gate reports, skips), exported as CSV, rather than markers on 002's waveform. Input-clock changes cannot be placed on the output exactly in drop mode.
+- **D3, ordering**: the list is sorted by position before it is tagged, so entries added out of order land where they belong.
+- **D5, after the stop**: the panel takes the take's end values (its last applied value per control; a refused command never reaches them), and the take is not stale against them. The sidecar's `tail` is the switch as the run used it: on only if the input ended.
+- **D5, re-renders of a take** stay ranged: a ranged request is written `live yes`, so a second generation keeps its range and changes. A sidecar with a change identifier this engine does not know restores its values, lists the identifier, and does not set the range.
+- **The callback** never panics: an engine failure stops the run, with its words on screen and the take marked incomplete. A lost reply is counted and does not mark the take.
+- **The live output** is scaled by the monitor volume on playback only. The take keeps the engine's samples.
+
 ## Decisions (in force under autopilot)
 
 | # | Decision | In force |
