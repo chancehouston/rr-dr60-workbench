@@ -3,12 +3,16 @@
 
 use std::fmt::Write as _;
 
+use std::collections::BTreeMap;
+
 use rr_dr60::changes::{ChangeEntry, Clock, MAX_CHANGES_PER_CALL};
 use rr_dr60::control_map::{self, ControlReading};
+use rr_dr60::record::{RecordReadout, RunData, StopFields};
 use rr_dr60::{Error, MemoryStatus, Pipeline, Settings, StopResult, Stream, VasEvent};
 use sha2::{Digest, Sha256};
 
 use crate::meters::MeterRow;
+use crate::records::{Run, RunSource};
 use crate::render::{Due, Scheduled, block_for};
 use crate::sidecar::{fmt_reading, parse_change, parse_reading};
 
@@ -74,6 +78,10 @@ pub struct RecordOutcome {
     /// Host input samples the workbench fed: the stop's `stop_input_position` (its own
     /// silence excluded), or `input_samples_total` at a self-stop.
     pub fed: u64,
+    /// The stop's fields, by the engine's own conversions (spec 005 D1).
+    pub stop: StopFields,
+    /// The recording counter before the start (spec 005 D1).
+    pub counter: u64,
 }
 
 /// A playback take (D4, D5).
@@ -108,9 +116,10 @@ pub struct PlayTake {
     pub incomplete: bool,
 }
 
-/// The persistent device engine (D1).
+/// The persistent device engine (D1), with the run of every recording it made (spec 005 D1).
 pub struct Device {
     p: Pipeline,
+    runs: BTreeMap<u64, Run>,
 }
 
 impl std::fmt::Debug for Device {
@@ -146,6 +155,7 @@ impl Device {
     pub fn new(settings: Settings) -> Result<Self, Error> {
         Ok(Self {
             p: Pipeline::new(settings)?,
+            runs: BTreeMap::new(),
         })
     }
 
@@ -170,6 +180,15 @@ impl Device {
             return Ok(());
         }
         self.p.reconfigure(settings)
+    }
+
+    /// Sets one control on the device by index (`set_control_value`, spec 025).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal.
+    pub fn set_value(&mut self, i: u32, v: ControlReading) -> Result<(), Error> {
+        self.p.set_control_value(i, v)
     }
 
     /// The memory's status.
@@ -214,13 +233,60 @@ impl Device {
         len: Option<usize>,
         changes: &[Scheduled],
     ) -> Result<RecordOutcome, Error> {
+        self.record_from(input, RunSource::unnamed(start as u64), start, len, changes)
+    }
+
+    /// As [`record`](Self::record), and keeps the recording's run with `source` naming its
+    /// input (spec 005 D1), by the recording counter.
+    ///
+    /// # Errors
+    ///
+    /// As [`record`](Self::record); a gate report count above its buffer
+    /// (`BufferTooSmall`, never a truncation: spec 005 review B1).
+    pub fn record_from(
+        &mut self,
+        input: &[f32],
+        source: RunSource,
+        start: usize,
+        len: Option<usize>,
+        changes: &[Scheduled],
+    ) -> Result<RecordOutcome, Error> {
+        let out = self.record_inner(input, start, len, changes)?;
+        if !matches!(out.end, RecordEnd::DiscardedEmpty) {
+            self.runs.insert(
+                out.counter,
+                Run {
+                    events: out.events.clone(),
+                    changes: out.log.clone(),
+                    stop: out.stop,
+                    source: RunSource {
+                        start: start as u64,
+                        ..source
+                    },
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    fn record_inner(
+        &mut self,
+        input: &[f32],
+        start: usize,
+        len: Option<usize>,
+        changes: &[Scheduled],
+    ) -> Result<RecordOutcome, Error> {
         check_clocks(changes, Clock::Input)?;
         let rate = Pipeline::settings(&self.p).host_rate_hz;
         let block = block_for(rate).max(1);
         let start = start.min(input.len());
         let end = len.map_or(input.len(), |l| (start + l).min(input.len()));
+        let counter = self.p.recording_counter();
         self.p.start_recording()?;
         let mut ebuf = vec![VasEvent::new(0, 0); self.p.max_record_events(block).max(1)];
+        // The abandon path's buffer; the stop's own is sized just before the stop (plan review
+        // Q3: a hang change scheduled late raises the bound).
+        let mut sbuf = vec![VasEvent::new(0, 0); self.p.max_record_events(rate as usize).max(1)];
         let mut cbuf = vec![ChangeEntry::default(); MAX_CHANGES_PER_CALL];
         let mut due = Due::new(changes);
         let mut events = Vec::new();
@@ -239,8 +305,12 @@ impl Device {
                 },
             );
             if let Some(e) = refusal {
-                self.abandon_recording(&mut ebuf);
+                self.abandon_recording(&mut sbuf);
                 return Err(e);
+            }
+            let need = self.p.max_record_events(n).max(1);
+            if ebuf.len() < need {
+                ebuf.resize(need, VasEvent::new(0, 0));
             }
             let info = match self
                 .p
@@ -248,12 +318,24 @@ impl Device {
             {
                 Ok(i) => i,
                 Err(e) => {
-                    self.abandon_recording(&mut ebuf);
+                    self.abandon_recording(&mut sbuf);
                     return Err(e);
                 }
             };
-            events.extend_from_slice(&ebuf[..info.events.min(ebuf.len())]);
-            log.extend_from_slice(&cbuf[..info.changes.min(cbuf.len())]);
+            if info.events > ebuf.len() || info.changes > cbuf.len() {
+                if info.stopped.is_some() {
+                    // The recorder stopped itself in this call: erase the item it kept (Q2).
+                    let count = self.p.memory_status().count;
+                    let _ = Pipeline::erase(&mut self.p, count);
+                } else {
+                    self.abandon_recording(&mut sbuf);
+                }
+                return Err(Error::BufferTooSmall {
+                    needed: info.events.max(info.changes),
+                });
+            }
+            events.extend_from_slice(&ebuf[..info.events]);
+            log.extend_from_slice(&cbuf[..info.changes]);
             pos += n;
             if info.stopped.is_some() {
                 // The recorder's own self-stop: the item is kept; no stop call (D2).
@@ -266,18 +348,32 @@ impl Device {
                     events,
                     log,
                     fed: info.input_samples_total,
+                    stop: StopFields::from(&info),
+                    counter,
                 });
             }
         }
-        let out = match self.p.stop_recording_with_changes(&mut ebuf, &mut cbuf) {
+        let need = self.p.max_record_events(rate as usize).max(1);
+        if sbuf.len() < need {
+            sbuf.resize(need, VasEvent::new(0, 0));
+        }
+        let out = match self.p.stop_recording_with_changes(&mut sbuf, &mut cbuf) {
             Ok(o) => o,
             Err(e) => {
-                self.abandon_recording(&mut ebuf);
+                self.abandon_recording(&mut sbuf);
                 return Err(e);
             }
         };
-        events.extend_from_slice(&ebuf[..out.flush.events.min(ebuf.len())]);
-        log.extend_from_slice(&cbuf[..out.changes.min(cbuf.len())]);
+        if out.flush.events > sbuf.len() || out.changes > cbuf.len() {
+            if let StopResult::Kept { number, .. } = out.result {
+                let _ = Pipeline::erase(&mut self.p, number);
+            }
+            return Err(Error::BufferTooSmall {
+                needed: out.flush.events.max(out.changes),
+            });
+        }
+        events.extend_from_slice(&sbuf[..out.flush.events]);
+        log.extend_from_slice(&cbuf[..out.changes]);
         // The input the workbench fed, the stop's own silence excluded (engine 020 D9).
         let fed = out.stop_input_position;
         let end = match out.result {
@@ -289,7 +385,74 @@ impl Device {
             events,
             log,
             fed,
+            stop: StopFields::from(&out),
+            counter,
         })
+    }
+
+    /// The run of item `n`, by its recording counter (spec 005 D1); `None` for an imported item.
+    pub fn run_of(&self, n: u32) -> Option<&Run> {
+        let c = self.p.recording_counter_of(n).ok().flatten()?;
+        self.runs.get(&c)
+    }
+
+    /// Item `n`'s processing record (spec 005 D2): the engine's bytes for its run, or the
+    /// imported-origin record for an imported item (an empty run).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal, in its words; a recorded item whose run the device does not hold.
+    pub fn processing_record(&self, n: u32) -> Result<Vec<u8>, String> {
+        let empty = Run {
+            events: Vec::new(),
+            changes: Vec::new(),
+            stop: StopFields::default(),
+            source: RunSource::unnamed(0),
+        };
+        let run = match self.p.recording_counter_of(n).map_err(|e| e.to_string())? {
+            None => &empty,
+            Some(c) => self.runs.get(&c).ok_or_else(|| {
+                format!("Item {n} was recorded before this device kept runs: no record")
+            })?,
+        };
+        let data = RunData {
+            events: &run.events,
+            changes: &run.changes,
+            stop: run.stop,
+        };
+        let len = self
+            .p
+            .processing_record_len(n, &data)
+            .map_err(|e| e.to_string())?;
+        let mut out = vec![0u8; len];
+        let written = self
+            .p
+            .processing_record_write(n, &data, &mut out)
+            .map_err(|e| e.to_string())?;
+        out.truncate(written);
+        Ok(out)
+    }
+
+    /// Reads a processing record with the device engine's reader (spec 005 D3): the engine's
+    /// own flag for another host rate included.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the record.
+    pub fn read_record(&self, bytes: &[u8]) -> Result<RecordReadout, Error> {
+        let mut r = RecordReadout::default();
+        self.p.processing_record_read(bytes, &mut r)?;
+        Ok(r)
+    }
+
+    /// Whether a read record belongs to item `n` (`recording_digest_matches`; it sets or clears
+    /// the read-out's `DIGEST_MISMATCH` flag).
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchRecording`.
+    pub fn check_record(&self, n: u32, r: &mut RecordReadout) -> Result<bool, Error> {
+        self.p.recording_digest_matches(n, r)
     }
 
     /// Erases item `n` (later items renumber).

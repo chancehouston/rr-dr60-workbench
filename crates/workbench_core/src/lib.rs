@@ -16,6 +16,7 @@ pub mod live_play;
 pub mod meters;
 pub mod monitor;
 pub mod panel;
+pub mod records;
 pub mod render;
 pub mod session;
 pub mod sidecar;

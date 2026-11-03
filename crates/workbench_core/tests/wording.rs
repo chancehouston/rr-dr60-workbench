@@ -202,3 +202,28 @@ fn every_workbench_string_passes() {
         .collect();
     assert!(hits.is_empty(), "denylisted wording: {hits:#?}");
 }
+
+/// Spec 005 (post-implementation review 13): the engine's enum names the record view prints
+/// with `{:?}` are not literals the scan sees, so they are checked here.
+#[test]
+fn record_view_debug_names_pass() {
+    use rr_dr60::components::ComponentId;
+    use rr_dr60::record::{Origin, StopHow};
+    let d = Denylist::load();
+    let names = [
+        format!("{:?}", Origin::Engine),
+        format!("{:?}", Origin::Imported),
+        format!("{:?}", StopHow::StopCall),
+        format!("{:?}", StopHow::MemoryFull),
+        format!("{:?}", rr_dr60::Encoding::Frames),
+        format!("{:?}", rr_dr60::Encoding::Samples),
+        format!("{:?}", ComponentId::None),
+        format!("{:?}", ComponentId::BandFilter),
+    ];
+    for n in &names {
+        assert!(d.hit(n).is_none(), "{n}: {:?}", d.hit(n));
+    }
+    for (_, f) in workbench_core::records::FLAG_NAMES {
+        assert!(d.hit(f).is_none(), "{f}");
+    }
+}

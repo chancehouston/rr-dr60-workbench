@@ -113,7 +113,8 @@ pub fn fmt_f32(v: f32) -> String {
     format!("{v} 0x{:08x}", v.to_bits())
 }
 
-pub(crate) fn fmt_reading(r: ControlReading) -> String {
+/// A reading as the sidecar writes it.
+pub fn fmt_reading(r: ControlReading) -> String {
     match r {
         ControlReading::Switch(b) => if b { "on" } else { "off" }.to_owned(),
         ControlReading::Integer(i) => i.to_string(),

@@ -17,9 +17,10 @@ methods and 15 stages. The shell lists the control manifest read-only.
 | 003 | **Live engine** | Real-time playback through the engine on the output device. Use CoreAudio's output unit, as 001 does: cpal opens only the device's own rates, and macOS devices offer no 6, 8 or 16 kHz (001 research R-04). Live controls and scheduled changes (`schedule_change`) from the panel. The change log and voice-activation events on a timeline. | 001, 002 |
 | 004 | **Record and play paths** | The recorder, the memory (items, capacity, erase, export and import of the stored form), offline playback to a take with the speed levels and modes, route, volume, battery and the stage switches, and a playback sidecar that replays. | 003 |
 | 004b | **Live playback** (split from 004) | A clone of the device engine in the output callback for a live playback with live controls; the memory stays usable on the device meanwhile (spec 004b's clarification). | 004 |
-| 005 | **Processing records and comparisons** | Write, read and re-render processing records (spec 020). Two renders side by side with a null test, a spectral difference and a parameter diff. Settings presets saved as files. | 001, 002 |
+| 005 | **Processing records** | Write, read and re-render processing records (spec 020). | 004 |
+| 005b | **Comparisons and presets** (split from 005, 2026-11-03) | Two renders side by side with a null test, a spectral difference and a parameter diff. Settings presets saved as files. | 001, 002 |
 | 007 | **The Mac's microphone as the input** (deferred from 003) | An input device as the source, the engine run in the input callback so the input clock drives it (no drift gaps), the take keeping the captured input; acoustic feedback and capture digests handled. | 003 |
-| 006 | **Coverage close-out** | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005 |
+| 006 | **Coverage close-out** | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005b |
 
 ## Standing rules
 
