@@ -6,13 +6,18 @@
 //! [`export`] and [`sidecar`] write a reproducible pair. Every string is in [`text`].
 
 pub mod ab;
+pub mod analysis;
+pub mod csv;
 pub mod export;
 pub mod input;
+pub mod meters;
 pub mod monitor;
 pub mod panel;
 pub mod render;
 pub mod session;
 pub mod sidecar;
+pub mod stages;
+pub mod taps;
 pub mod text;
 
 /// The engine version this build links (the pinned commit's `rr_dr60::VERSION`).

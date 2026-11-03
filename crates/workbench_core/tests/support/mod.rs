@@ -479,7 +479,7 @@ pub fn request(
         settings,
         engine_values,
         tail: true,
-        block: workbench_core::render::BLOCK,
+        block: workbench_core::render::block_for(rate),
     }
 }
 

@@ -52,7 +52,7 @@ fn render_equals_the_oracles() {
                     assert!(r.not_emitted > 0, "{rate} Hz {name}: drop mode removes");
                 }
                 let fed = with_tail(&x, r.tail_samples);
-                for block in [0usize, 1] {
+                for block in [0usize, 1, 4096] {
                     let (o, ev) = oracle(req.settings, &req.engine_values, &fed, block);
                     assert_eq!(
                         &r.samples[..],

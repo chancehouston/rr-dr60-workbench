@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Feature 002, taps, scopes and meters:
+  - the meter timeline at 10 ms calls (the render's block is now rate ÷ 100, and the output is unchanged);
+  - the reach rules, pinned by behavior;
+  - waveform strips on the engine's map;
+  - Welch spectra at 5 Hz bins and their ratio;
+  - the spectrogram;
+  - the tap browser;
+  - the stage panels;
+  - CSV exports with sidecars.
 - Feature 001, the offline render session:
   - opening WAV, AIFF and FLAC files at the engine's seven rates, with the published conversion rules and a channel or the labelled mix;
   - a panel generated from the engine's control manifest and checked by the engine;

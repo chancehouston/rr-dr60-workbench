@@ -11,8 +11,12 @@ use rr_dr60::{Error, Pipeline, Settings, Tap, VasEvent, VasMode};
 
 use crate::input::{self, Channel};
 
-/// The render's block size (recorded in the sidecar).
-pub const BLOCK: usize = 4096;
+/// The render's block for a rate: 10 ms of host samples (spec 002 D1). 100 is the seven rates'
+/// greatest common divisor, so every call carries exactly 60 device samples. The output does
+/// not depend on the block (001's oracles); the block sets the meter timeline's resolution.
+pub const fn block_for(rate_hz: u32) -> usize {
+    (rate_hz / 100) as usize
+}
 
 /// What a render is made from: a snapshot taken at Render (data-model "RenderRequest").
 #[derive(Clone, Debug)]
@@ -74,6 +78,8 @@ pub struct Render {
     pub output_sha256: [u8; 32],
     /// The engine's footprint.
     pub footprint_bytes: usize,
+    /// The meter timeline (spec 002 D1): the rest read-out, then one row per call.
+    pub meters: Vec<crate::meters::MeterRow>,
 }
 
 /// Whether the voice-activation gate runs for `s` — the engine's own rule, quoted because the
@@ -110,7 +116,7 @@ impl RenderRequest {
             settings,
             engine_values,
             tail,
-            block: BLOCK,
+            block: block_for(input.rate_hz),
         }
     }
 }
@@ -170,6 +176,14 @@ pub fn render(
     let mut fed = 0u64;
     let mut count = 0u64;
     let mut paused = false;
+    let input_len = req.input.len() as u64;
+    let mut meters = Vec::with_capacity((total / block as u64 + 2) as usize);
+    meters.push(crate::meters::MeterRow {
+        meters: p.rest_meters(),
+        in_span: (0, 0),
+        out_span: (0, 0),
+        tail: false,
+    });
     while fed < total {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
@@ -182,7 +196,14 @@ pub fn render(
         }
         ibuf[have..n].fill(0.0);
         let info = p.process_with_events(&ibuf[..n], &mut obuf[..n], &mut ebuf)?;
+        let out0 = out.len() as u64;
         out.extend_from_slice(&obuf[..info.produced]);
+        meters.push(crate::meters::MeterRow {
+            meters: Pipeline::meters(&p),
+            in_span: (fed, fed + n as u64),
+            out_span: (out0, out.len() as u64),
+            tail: fed >= input_len && n > 0,
+        });
         events.extend_from_slice(&ebuf[..info.events]);
         count += info.events as u64;
         paused = info.paused;
@@ -207,6 +228,7 @@ pub fn render(
         peak,
         output_sha256,
         footprint_bytes: p.footprint_bytes(),
+        meters,
     }))
 }
 

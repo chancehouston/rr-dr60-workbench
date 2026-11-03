@@ -103,7 +103,9 @@ fn workbench_source() -> String {
 }
 
 /// The spec's Engine reach list, as restated in its Clarifications (2026-11-02, implementation).
-const LISTED: [&str; 12] = [
+const LISTED: [&str; 14] = [
+    "meters",
+    "rest_meters",
     "new",
     "process",
     "process_with_events",
