@@ -172,8 +172,8 @@ pub fn plot_points(field: &MeterField, r: &crate::render::Render) -> Vec<[f64; 2
             continue;
         };
         // A break where a mark's output position falls after the previous plotted call's
-        // output and up to this call's end (spec 008 D6: with the coder on, the splice reaches
-        // the output inside the call that resumes, after the held coder delay).
+        // output and up to this call's end (the marks sit at the heard point, the report's
+        // position plus the coder's delay plus the playback half's latency: engine 0.95, spec 028).
         let out_end = if field.side == Side::Output {
             row.out_span.1
         } else {

@@ -230,13 +230,15 @@ fn reports(r: &Render) -> Vec<(u64, u64)> {
 /// A's output index where the two renders' gates first differ (D3), or `None` when they agree:
 /// the first differing report, the earlier of A's and B's; or, when the gate is paused at the
 /// end on one side only, that side's end (a pause that never resumes reports no splice: review
-/// B1). The end is placed before A's coder delay: B's position o maps to A's as
-/// o + C_B − C_A − s. With the coder on this is earlier than the splice reaches the output by
-/// the coder's delay, which covers the frame the coder decides it in (a conservative prefix).
+/// B1). The prefix is on A's report clock (before the coder): B's report position o maps to
+/// A's as o + H_B − H_A − s, H the heard shift (the coder's delay plus the playback half's
+/// latency, engine 0.95, spec 028), and a paused end is placed H before the take's end. With the
+/// coder on this is earlier than the splice is heard by H, which covers the frame the coder
+/// decides it in (a conservative prefix).
 pub fn prefix_end(a: &Render, b: &Render, s: i64) -> Option<u64> {
     let (ca, cb) = (
-        i64::from(a.codec_delay_samples),
-        i64::from(b.codec_delay_samples),
+        i64::from(a.splice_shift_samples),
+        i64::from(b.splice_shift_samples),
     );
     let at_a = |o: u64| o;
     let at_b = |o: u64| (o as i64 + cb - ca - s).max(0) as u64;

@@ -258,11 +258,10 @@ fn the_map_is_the_engines() {
                 }));
                 assert!(!r.events.is_empty(), "{rate} {mode} {codec}");
                 let p = workbench_core::render::fresh_engine(&r.request).unwrap();
-                let lpost = if rate == 6000 {
-                    0
-                } else {
-                    p.playback_latency_samples()
-                };
+                // At the default tap (after stage 10) L_post is the playback latency (0 at
+                // 6 kHz); at `AfterVas`/`AfterDecoder` it is not (`the_map_is_the_engines_at_taps`).
+                let lpost = p.playback_latency_samples();
+                assert!(r.splice_shift_samples <= r.latency_samples);
                 assert_eq!(
                     r.splice_shift_samples,
                     r.codec_delay_samples + lpost,
@@ -304,6 +303,41 @@ fn the_map_is_the_engines() {
                 );
                 assert_eq!(differs_from_coder_only, want, "{rate} {mode} {codec}");
             }
+        }
+    }
+}
+
+/// Review of #27: the per-frame map equals the engine's centre on every output at the taps where
+/// L_post is not the playback latency (`AfterVas`, `AfterDecoder`) and at a front tap, 48 kHz.
+#[test]
+fn the_map_is_the_engines_at_taps() {
+    let rate = 48_000;
+    let b = voiced(rate, 0.4, 0.5);
+    let x = [b.clone(), vec![0.0f32; 2 * rate as usize], b].concat();
+    for tap in ["after_vas", "after_decoder", "after_mic_amp"] {
+        let r = run(&request(rate, &x, |p| {
+            set_choice(p, "vas.mode", "drop");
+            set_choice(p, "tap", tap);
+        }));
+        assert!(r.splice_shift_samples <= r.latency_samples, "{tap}");
+        if tap != "after_mic_amp" {
+            assert!(!r.events.is_empty(), "{tap}");
+        }
+        let p = workbench_core::render::fresh_engine(&r.request).unwrap();
+        for e in &r.events {
+            assert_eq!(
+                e.output_position + u64::from(r.splice_shift_samples),
+                p.one_pass_splice_output_position(e),
+                "{tap}"
+            );
+        }
+        for o in 0..r.samples.len() as u64 {
+            let (i, _) = workbench_core::render::output_to_input(o, &r);
+            assert_eq!(
+                i,
+                p.one_pass_input_at_output(o, &r.events).centre,
+                "{tap} {o}"
+            );
         }
     }
 }

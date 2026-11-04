@@ -193,6 +193,12 @@ pub fn timeline_csv(r: &Render) -> String {
             e.position, e.before, e.after, e.tag
         );
     }
+    // One engine for every report's alignment (built with the take's settings; a live value
+    // does not move the latency). A refusal is named in a comment row and leaves the fields empty.
+    let engine = crate::render::fresh_engine(&r.request);
+    if let Err(err) = &engine {
+        let _ = writeln!(s, "# the engine's alignment is unavailable: {err}");
+    }
     for e in &r.events {
         let kind = if r.drop_mode {
             "splice"
@@ -200,9 +206,12 @@ pub fn timeline_csv(r: &Render) -> String {
             "muted_region"
         };
         let heard = e.output_position + u64::from(r.splice_shift_samples);
-        let align = crate::render::input_alignment(heard, r).map_or_else(
+        let align = engine.as_ref().map_or_else(
             |_| ",,".to_owned(),
-            |a| format!("{},{},{}", a.centre, a.first, a.last),
+            |p| {
+                let a = p.one_pass_input_at_output(heard, &r.events);
+                format!("{},{},{}", a.centre, a.first, a.last)
+            },
         );
         let _ = writeln!(
             s,
