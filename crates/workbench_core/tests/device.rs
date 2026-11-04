@@ -492,3 +492,114 @@ fn playback_changes_logged() {
         assert_eq!(take.place, d.items()[0].length, "{rate}: the place reached");
     }
 }
+
+// --- 010 (engine 0.94): the four methods the removed recipe reached ---
+
+/// 010 D5: with no record-side change pending, the device records with the plain call (asserted
+/// by `plain_call`); its stored form and run equal the logged call's (the twin with one change
+/// scheduled past the input).
+#[test]
+fn plain_record_twin() {
+    for &rate in &[6000u32, 48_000] {
+        let s = settings(rate, |p| {
+            p.set_many(&[(idx("memory.capacity_s"), ControlReading::Integer(4))]);
+        });
+        let x = tone(rate, 1.0, 0.1);
+        let mut a = Device::new(s).unwrap();
+        let oa = a.record(&x, 0, None, &[]).unwrap();
+        // A change past the input keeps the logged call and lands nowhere.
+        let late = [Scheduled {
+            clock: Clock::Input,
+            position: 10 * u64::from(rate),
+            control: idx("mic.hiss_offset_db"),
+            value: 3.0,
+            tag: 1,
+        }];
+        let mut b = Device::new(s).unwrap();
+        let ob = b.record(&x, 0, None, &late).unwrap();
+        assert!(oa.plain_call && !ob.plain_call, "{rate}: the calls taken");
+        assert!(oa.log.is_empty() && ob.log.is_empty(), "{rate}");
+        assert_eq!(oa.events, ob.events, "{rate}");
+        assert_eq!(oa.fed, ob.fed, "{rate}");
+        assert_eq!(a.export(1).unwrap(), b.export(1).unwrap(), "{rate}");
+    }
+}
+
+/// 010 D5: the fill leaves at least the asked remaining capacity, the filler a whole number of
+/// the encoding's units (rounded down, so the capacity rounds up); the encoding is the engine's;
+/// the filler's record reads as imported; a recording then self-stops.
+#[test]
+fn fill_and_encoding() {
+    for codec in [false, true] {
+        let s = settings(8000, |p| {
+            p.set_many(&[
+                (idx("memory.capacity_s"), ControlReading::Integer(4)),
+                (idx("speech_codec_enabled"), ControlReading::Switch(codec)),
+            ]);
+        });
+        let mut d = Device::new(s).unwrap();
+        let want = if codec {
+            rr_dr60::Encoding::Frames
+        } else {
+            rr_dr60::Encoding::Samples
+        };
+        assert_eq!(d.encoding(), want);
+        let capacity = d.status().remaining_samples;
+        let unit = want.unit_samples() as u64;
+        // 6001 is not a whole number of frames: with the codec on the capacity rounds up.
+        d.fill_to_remaining(6001).unwrap();
+        let left = d.status().remaining_samples;
+        assert!(left >= 6001 && left - 6001 < unit, "codec {codec}: {left}");
+        assert_eq!((capacity - left) % unit, 0, "codec {codec}: whole units");
+        if codec {
+            assert!(left > 6001, "codec on: rounded up ({left})");
+        } else {
+            assert_eq!(left, 6001);
+        }
+        assert_eq!(d.items().len(), 1);
+        let rec = d.processing_record(1).unwrap();
+        let mut r = rr_dr60::record::RecordReadout::default();
+        rr_dr60::record::read(&rec, &mut r).unwrap();
+        assert_eq!(r.origin, rr_dr60::record::Origin::Imported, "codec {codec}");
+        // The engine's session refuses it (the From<Error> arm, past plan_of).
+        let plan = rr_dr60::rerender::Plan::from_record(&rec).unwrap();
+        assert_eq!(
+            workbench_core::records::re_render(
+                plan,
+                &[0.0; 16],
+                &std::sync::atomic::AtomicU64::new(0),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap_err(),
+            workbench_core::records::ReRenderError::Imported
+        );
+        let out = d.record(&tone(8000, 2.0, 0.1), 0, None, &[]).unwrap();
+        assert!(
+            matches!(out.end, RecordEnd::SelfStopped { .. }),
+            "codec {codec}: {:?}",
+            out.end
+        );
+        // A fill above the remaining capacity is the engine's refusal.
+        assert!(d.fill_to_remaining(1_000_000).is_err());
+    }
+}
+
+/// 010 D5: a device built at a counter records that counter's hiss stream: its first recording
+/// equals the second recording of a device built at 0.
+#[test]
+fn new_at_counter_twin() {
+    let rate = 16_000;
+    let s = settings(rate, |p| {
+        p.set_many(&[(idx("memory.capacity_s"), ControlReading::Integer(4))]);
+    });
+    let x = tone(rate, 0.5, 0.05);
+    let mut a = Device::new(s).unwrap();
+    a.record(&x, 0, None, &[]).unwrap();
+    a.record(&x, 0, None, &[]).unwrap();
+    let mut b = Device::new_at_counter(s, 1).unwrap();
+    let ob = b.record(&x, 0, None, &[]).unwrap();
+    assert_eq!(ob.counter, 1);
+    assert_eq!(b.items()[0].counter, Some(1));
+    assert_eq!(a.items()[1].digest, b.items()[0].digest);
+    assert_ne!(a.items()[0].digest, b.items()[0].digest);
+}

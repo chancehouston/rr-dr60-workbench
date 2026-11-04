@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (010)
+
+- The engine pin moves to `ad1ba8d` (rr-dr60-emu 0.94.0, the merge of engine spec 027, the public re-render).
+- **The re-render is the engine's session** (`rr_dr60::rerender`): the workbench's copy of the recipe (the filler, the slot restore, the schedule refill, the stop rule) is gone. The result line shows the engine's verdict (Reproduces, Differs, Rebuilt) and the rows that landed. An input that ends before the record's stop is now refused, with the samples missing, instead of reported as a difference.
+- The device records with the plain `record` call when no record-side change is scheduled or pending (the same stored form).
+
+### Added (010)
+
+- The memory view's **Fill the memory** (leave N s; `fill_to_remaining`) and **Reset device at counter** (`new_at_counter`), both labelled additions of the emulator, and the memory's encoding on the status line.
+
 ### Changed (008)
 
 - The engine pin moves to `3890bfe` (rr-dr60-emu 0.93.0, the merge of engine spec 026, the host reads).

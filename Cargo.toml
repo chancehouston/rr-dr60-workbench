@@ -12,7 +12,7 @@ publish = false
 
 [workspace.dependencies]
 # The engine, pinned to a full commit of rr-dr60-emu's main (0.93.0, the merge of engine spec 026; no tag yet).
-rr_dr60 = { git = "https://github.com/chancehouston/rr-dr60-emu", rev = "3890bfeb1fd402f3cca4f5a5497a712004dd7d35" }
+rr_dr60 = { git = "https://github.com/chancehouston/rr-dr60-emu", rev = "ad1ba8d401228c91480f12bd8ff3df68ac489e7f" }
 workbench_core = { path = "crates/workbench_core" }
 eframe = "0.37"
 symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "flac", "pcm"] }

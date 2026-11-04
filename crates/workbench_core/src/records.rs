@@ -1,7 +1,8 @@
 //! Processing records (spec 005): the run a recording keeps (D1), the record and its
-//! record-input file (D2), the read-out's flags and the settings diff (D3), and the re-render, a
-//! mirror of the engine's recipe (D4; the engine's Swift `ReRender.reRender` and `fill`, engine
-//! issue #76, which waits for engine spec 027; the engine's 0.93 fixed its Swift restore, #77).
+//! record-input file (D2), the read-out's flags and the settings diff (D3), and the re-render (D4),
+//! since 010 the engine's own session (`rr_dr60::rerender`, engine spec 027, engine issue #76): the
+//! workbench no longer keeps a copy of the recipe (the fill, the slot restore, the schedule's
+//! refill, the stop rule).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -11,7 +12,8 @@ use rr_dr60::changes::ChangeEntry;
 use rr_dr60::components::{self, ComponentId, InsertionPointId};
 use rr_dr60::control_map::ControlReading;
 use rr_dr60::record::{self, Origin, RecordReadout, StopFields};
-use rr_dr60::{Encoding, Error, Pipeline, Settings, StopResult, Stream, VasEvent};
+use rr_dr60::rerender::{Plan, ReRender, Verdict};
+use rr_dr60::{Error, Pipeline, Settings, VasEvent};
 use sha2::{Digest, Sha256};
 
 use crate::input::{Channel, hex};
@@ -364,28 +366,6 @@ pub fn unknown_settings(bytes: &[u8], r: &RecordReadout) -> Vec<String> {
         .collect()
 }
 
-/// What a re-render needs, from a read-out and its change rows (plan R-07). The tests apply the
-/// engine's deltas to it (spec US1 AS3).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Recipe {
-    /// The record's settings.
-    pub settings: Settings,
-    /// The recording counter.
-    pub counter: u64,
-    /// The remaining capacity at the start, device samples.
-    pub remaining_at_start: u64,
-    /// The slot's component.
-    pub component: ComponentId,
-    /// The slot's parameter store.
-    pub store: [f32; components::COMPONENT_PARAMETER_BUDGET],
-    /// The record's change entries.
-    pub changes: Vec<ChangeEntry>,
-    /// The stop's fields.
-    pub stop: StopFields,
-    /// Fill by import (always in the window; the "no fill" delta clears it).
-    pub fill: bool,
-}
-
 /// A re-render's refusal or failure (D4), in words by `Display`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReRenderError {
@@ -399,8 +379,8 @@ pub enum ReRenderError {
     RecordInput(String),
     /// The session's input is not the record's: its file name.
     OtherInput(String),
-    /// The filler did not bring the remaining capacity to the record's.
-    Fill(String),
+    /// The session's input ends before the record's stop: the host samples missing.
+    InputShort(u64),
     /// The re-render's stop kept nothing.
     NothingKept,
     /// Cancelled.
@@ -428,7 +408,10 @@ impl std::fmt::Display for ReRenderError {
                 "The session's input is not the record's: open {name} with the same channel"
             ),
             Self::RecordInput(why) => write!(f, "{why}"),
-            Self::Fill(why) => write!(f, "The memory could not be filled as the record's: {why}"),
+            Self::InputShort(n) => write!(
+                f,
+                "The session's input ends {n} host samples before the record's stop"
+            ),
             Self::NothingKept => write!(f, "The re-render kept nothing: the record differs"),
             Self::Cancelled => write!(f, "Re-render cancelled"),
             Self::Engine(e) => write!(f, "{e}"),
@@ -438,42 +421,37 @@ impl std::fmt::Display for ReRenderError {
 
 impl From<Error> for ReRenderError {
     fn from(e: Error) -> Self {
-        Self::Engine(e)
+        match e {
+            Error::ImportedRecord => Self::Imported,
+            Error::UnknownComponent => Self::UnknownComponent,
+            Error::InputShort { needed } => Self::InputShort(needed),
+            e => Self::Engine(e),
+        }
     }
 }
 
-impl Recipe {
-    /// The recipe of a read record.
-    ///
-    /// # Errors
-    ///
-    /// An imported-origin record; a component this engine does not know.
-    pub fn of(bytes: &[u8], r: &RecordReadout) -> Result<Self, ReRenderError> {
-        if r.origin == Origin::Imported {
-            return Err(ReRenderError::Imported);
-        }
-        if r.flags & record::flags::UNKNOWN_COMPONENT != 0 {
-            return Err(ReRenderError::UnknownComponent);
-        }
-        Ok(Self {
-            settings: r.settings,
-            counter: r.recording_counter,
-            remaining_at_start: r.remaining_samples_at_start,
-            component: r.component,
-            store: r.store,
-            changes: change_rows(bytes, r),
-            stop: r.stop,
-            fill: true,
-        })
+/// The engine's plan of a read record (010; engine spec 027 D4), refused as the workbench
+/// refused it before the session: an imported origin, a component this engine does not know.
+///
+/// # Errors
+///
+/// An imported-origin record; an unknown component; the engine's refusal of the record.
+pub fn plan_of(bytes: &[u8], r: &RecordReadout) -> Result<Plan, ReRenderError> {
+    if r.origin == Origin::Imported {
+        return Err(ReRenderError::Imported);
     }
+    if r.flags & record::flags::UNKNOWN_COMPONENT != 0 {
+        return Err(ReRenderError::UnknownComponent);
+    }
+    Ok(Plan::from_record(bytes)?)
 }
 
-/// A re-render prepared (plan R-07b): the recipe, the read-out and the span of the session's
-/// input to feed.
-#[derive(Clone, Debug, PartialEq)]
+/// A re-render prepared (plan R-07b): the engine's plan, the read-out and the span of the
+/// session's input to feed.
+#[derive(Clone, Debug)]
 pub struct Prepared {
-    /// The recipe.
-    pub recipe: Recipe,
+    /// The engine's plan (editable before the run).
+    pub plan: Plan,
     /// The record's read-out (the flags shown before the run).
     pub readout: RecordReadout,
     /// The span of the session's input, from the record's start.
@@ -498,7 +476,7 @@ pub fn prepare(
     }
     let mut readout = RecordReadout::default();
     record::read(record, &mut readout)?;
-    let recipe = Recipe::of(record, &readout)?;
+    let plan = plan_of(record, &readout)?;
     let name = ri.input_file.clone().unwrap_or_default();
     if ri.input_sha256 != Some(input.input_sha256) || ri.channel != Some(input.channel) {
         return Err(ReRenderError::OtherInput(name));
@@ -511,71 +489,54 @@ pub fn prepare(
         .map_or(len, |f| start.saturating_add(f))
         .min(len);
     Ok(Prepared {
-        recipe,
+        plan,
         readout,
         span: start..end,
     })
 }
 
-/// A re-render's result (D4).
+/// A re-render's result (D4): the engine's outcome with the record's digest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outcome {
-    /// The new stored form's digest.
+    /// The new stored form's digest (a stop that kept nothing is `ReRenderError::NothingKept`).
     pub digest: u64,
     /// The record's digest.
     pub expected: u64,
+    /// The engine's verdict (`Identical`, `Differs`, `Rebuilt` for an edited plan).
+    pub verdict: Verdict,
+    /// The digest equals the record's.
+    pub matches_original: bool,
+    /// The change rows the engine applied.
+    pub rows_landed: u64,
 }
 
 impl Outcome {
-    /// Whether the record and the recording belong together.
+    /// Whether the record and the recording belong together (the digests are equal).
     pub fn reproduces(&self) -> bool {
-        self.digest == self.expected
+        self.matches_original
+    }
+
+    /// The verdict in words: the engine's guide's sentences, shortened.
+    pub fn verdict_words(&self) -> &'static str {
+        match self.verdict {
+            Verdict::Identical => "Reproduces",
+            Verdict::Differs => "Differs",
+            Verdict::Rebuilt if self.matches_original => "Rebuilt, matching the original",
+            Verdict::Rebuilt => "Rebuilt",
+            _ => "Unknown verdict",
+        }
     }
 }
 
-/// A filler: `samples` device samples of zeros recorded on a throwaway 6 kHz engine with every
-/// record stage off and the codec as `encoding`'s, exported (Swift's `fill`; never by recording
-/// on the re-render engine, which would move its counter).
-///
-/// # Errors
-///
-/// The throwaway engine's refusal, or a filler not kept at exactly `samples`.
-pub fn filler(encoding: Encoding, samples: u64) -> Result<Vec<u8>, ReRenderError> {
-    let mut s = Settings::new(6000);
-    s.record_stage_enabled = false;
-    s.adc_clamp_enabled = false;
-    s.agc.enabled = false;
-    s.vas.enabled = false;
-    s.mic.capsule_enabled = false;
-    s.mic.amp_enabled = false;
-    s.speech_codec_enabled = encoding == Encoding::Frames;
-    s.memory.capacity_s = u32::try_from(samples / 6000 + 1)
-        .map_err(|_| ReRenderError::Fill("the filler is too long".into()))?;
-    let mut q = Pipeline::new(s)?;
-    q.start_recording()?;
-    let _ = Pipeline::record(&mut q, &vec![0.0f32; samples as usize], &mut [])?;
-    let out = q.stop_recording(&mut [])?;
-    let StopResult::Kept { number, length } = out.result else {
-        return Err(ReRenderError::Fill("the filler kept nothing".into()));
-    };
-    if length != samples {
-        return Err(ReRenderError::Fill(format!(
-            "the filler kept {length} samples of {samples}"
-        )));
-    }
-    let mut bytes = vec![0u8; q.export_len(number)?];
-    let _ = q.export(number, &mut bytes)?;
-    Ok(bytes)
-}
-
-/// Restores the slot (plan R-07 step 3): every component's parameters at their published
-/// offsets (`components::components()`, `parameter_offset + i`; post-implementation review B4),
-/// whatever the component, as the engine's harness restores the store; then the component.
+/// Restores the slot on the settings diff's check engine (D3): every component's parameters at
+/// their published offsets (`components::components()`, `parameter_offset + i`; 005
+/// post-implementation review B4), then the component. Since 010 the re-render does not use it:
+/// the engine's session restores the slot itself.
 ///
 /// # Errors
 ///
 /// The engine's refusal of a value or of the component.
-pub fn restore_slot(
+fn restore_slot(
     p: &mut Pipeline,
     component: ComponentId,
     store: &[f32; components::COMPONENT_PARAMETER_BUDGET],
@@ -599,90 +560,46 @@ pub fn expected_note(flags: u32) -> Option<String> {
     (!names.is_empty()).then(|| format!("expected under {}", names.join(", ")))
 }
 
-/// Re-renders `recipe` from `fed`, the input from the record's start (D4), in 10 ms calls;
-/// `progress` counts the host samples fed, `cancel` stops between calls. Returns the new stored
-/// form's digest and the record's.
+/// Re-renders `plan` from `fed`, the input from the record's start (D4), through the engine's
+/// session (`rr_dr60::rerender::ReRender`) in 10 ms feeds; the session splits a feed at the next
+/// row, so no row lands late. `progress` counts the host samples the engine took, `cancel` stops
+/// between feeds.
 ///
 /// # Errors
 ///
-/// The engine's refusal of a step; a fill that did not bring the remaining capacity to the
-/// record's; a cancel.
+/// The engine's refusal of the plan or a step; an input that ends before the record's stop; a
+/// stop that kept nothing; a cancel.
 pub fn re_render(
-    recipe: &Recipe,
-    expected: u64,
+    plan: Plan,
     fed: &[f32],
     progress: &AtomicU64,
     cancel: &AtomicBool,
 ) -> Result<Outcome, ReRenderError> {
-    let mut p = Pipeline::new_at_counter(recipe.settings, recipe.counter)?;
-    // 2. The fill by import.
-    let st = p.memory_status();
-    if recipe.fill && st.remaining_samples > recipe.remaining_at_start {
-        let missing = st.remaining_samples - recipe.remaining_at_start;
-        let bytes = filler(Pipeline::encoding(&p), missing)?;
-        let _ = p.import(&bytes)?;
-        let now = p.memory_status().remaining_samples;
-        if now != recipe.remaining_at_start {
-            return Err(ReRenderError::Fill(format!(
-                "{now} samples remain, the record's {}",
-                recipe.remaining_at_start
-            )));
-        }
-    }
-    // 3. The slot: the parameters the engine accepts, then the component.
-    restore_slot(&mut p, recipe.component, &recipe.store)?;
-    // 4. The schedule, refilled below 64 pending.
-    let mut next = 0usize;
-    let schedule = |p: &mut Pipeline, next: &mut usize| -> Result<(), Error> {
-        while *next < recipe.changes.len() && p.pending_changes(Stream::Record)? < 64 {
-            let c = recipe.changes[*next];
-            p.schedule_change(Stream::Record, c.position, c.control, c.after, c.tag)?;
-            *next += 1;
-        }
-        Ok(())
-    };
-    schedule(&mut p, &mut next)?;
-    // 5. The feed up to the stop position.
-    p.start_recording()?;
-    let rate = recipe.settings.host_rate_hz;
-    let block = block_for(rate).max(1);
-    let end = usize::try_from(recipe.stop.stop_input_position)
-        .unwrap_or(usize::MAX)
-        .min(fed.len());
-    // The reports do not enter the digest, so this buffer is not regrown after a hang landing
-    // (as the engine's harness; review B6). The calls are 10 ms, as the recording's were, so
-    // 64 pending is always enough between two refills (review B4's note).
-    let mut ev = vec![VasEvent::new(0, 0); p.max_record_events(block).max(1)];
-    let mut pos = 0usize;
-    let mut stopped = false;
-    while pos < end {
+    let expected = plan.readout().recording_digest;
+    let block = block_for(plan.settings().host_rate_hz).max(1);
+    let mut session = ReRender::new(plan)?;
+    let mut taken = 0u64;
+    for chunk in fed.chunks(block) {
         if cancel.load(Ordering::Relaxed) {
             return Err(ReRenderError::Cancelled);
         }
-        let n = block.min(end - pos);
-        let info = Pipeline::record(&mut p, &fed[pos..pos + n], &mut ev)?;
-        pos += n;
-        progress.store(pos as u64, Ordering::Relaxed);
-        schedule(&mut p, &mut next)?;
-        if info.stopped.is_some() {
-            stopped = true;
+        let f = session.feed_f32(chunk)?;
+        taken += f.taken;
+        progress.store(taken, Ordering::Relaxed);
+        if f.reached_stop || f.self_stopped {
             break;
         }
     }
-    // 6. No stop call after a self-stop; otherwise a stop call (also when a self-stop was
-    // expected and did not come, so the result honestly differs).
-    let number = if stopped {
-        p.memory_status().count
-    } else {
-        let mut sev = vec![VasEvent::new(0, 0); p.max_record_events(rate as usize).max(1)];
-        match p.stop_recording(&mut sev)?.result {
-            StopResult::Kept { number, .. } => number,
-            _ => return Err(ReRenderError::NothingKept),
-        }
+    let o = session.finish()?;
+    let Some(digest) = o.digest else {
+        return Err(ReRenderError::NothingKept);
     };
     Ok(Outcome {
-        digest: p.recording_digest(number)?,
+        digest,
         expected,
+        verdict: o.verdict,
+        matches_original: o.matches_original,
+        rows_landed: o.rows_landed,
     })
 }
 

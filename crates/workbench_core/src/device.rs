@@ -82,6 +82,9 @@ pub struct RecordOutcome {
     pub stop: StopFields,
     /// The recording counter before the start (spec 005 D1).
     pub counter: u64,
+    /// The device recorded with the plain `record` call (010 D5): no record-side change was
+    /// scheduled or pending, so the change log is empty either way.
+    pub plain_call: bool,
 }
 
 /// A playback take (D4, D5).
@@ -158,6 +161,39 @@ impl Device {
             p: Pipeline::new(settings)?,
             runs: BTreeMap::new(),
         })
+    }
+
+    /// A device with an empty memory whose next recording is number `counter` of the engine's
+    /// recording counter (`Pipeline::new_at_counter`, engine spec 020; 010 D5): its first
+    /// recording uses that counter's hiss stream, as a device that had recorded `counter` times.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the settings.
+    pub fn new_at_counter(settings: Settings, counter: u64) -> Result<Self, Error> {
+        Ok(Self {
+            p: Pipeline::new_at_counter(settings, counter)?,
+            runs: BTreeMap::new(),
+        })
+    }
+
+    /// The memory's encoding (`Pipeline::encoding`; 010 D5): device samples, or the speech
+    /// coder's frames.
+    pub fn encoding(&self) -> rr_dr60::Encoding {
+        Pipeline::encoding(&self.p)
+    }
+
+    /// Writes one filler item so that `remaining` device samples of capacity remain
+    /// (`Pipeline::fill_to_remaining`, engine spec 027; 010 D5): an import-shaped item whose
+    /// content is unspecified, for exploring a nearly full memory and the recorder's self-stop.
+    /// It has no run.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal (a remaining capacity above the current one, no slots left, a
+    /// recording or playback in progress).
+    pub fn fill_to_remaining(&mut self, remaining: u64) -> Result<(), Error> {
+        Pipeline::fill_to_remaining(&mut self.p, remaining).map(|_| ())
     }
 
     /// The engine's settings.
@@ -283,6 +319,13 @@ impl Device {
         let start = start.min(input.len());
         let end = len.map_or(input.len(), |l| (start + l).min(input.len()));
         let counter = self.p.recording_counter();
+        // 010 D5: with no record-side change scheduled or pending, the log stays empty, so the
+        // plain `record` call is used (`plain_record_twin`). Sufficient: the one-pass's values
+        // reach the recorder by `adopt` at `start_recording`, which writes no entry (engine spec
+        // 017); record-side values have no plain setter; component parameters are scheduled
+        // changes and so pending; the output-clock controls never log on the record stream.
+        // Read before the start (kept by it, engine spec 017), so an error leaves no recording.
+        let plain = changes.is_empty() && self.p.pending_changes(Stream::Record)? == 0;
         self.p.start_recording()?;
         let mut ebuf = vec![VasEvent::new(0, 0); self.p.max_record_events(block).max(1)];
         // The abandon path's buffer; the stop's own is sized just before the stop (plan review
@@ -313,10 +356,13 @@ impl Device {
             if ebuf.len() < need {
                 ebuf.resize(need, VasEvent::new(0, 0));
             }
-            let info = match self
-                .p
-                .record_with_changes(&input[pos..pos + n], &mut ebuf, &mut cbuf)
-            {
+            let x = &input[pos..pos + n];
+            let call = if plain {
+                Pipeline::record(&mut self.p, x, &mut ebuf)
+            } else {
+                self.p.record_with_changes(x, &mut ebuf, &mut cbuf)
+            };
+            let info = match call {
                 Ok(i) => i,
                 Err(e) => {
                     self.abandon_recording(&mut sbuf);
@@ -351,6 +397,7 @@ impl Device {
                     fed: info.input_samples_total,
                     stop: StopFields::from(&info),
                     counter,
+                    plain_call: plain,
                 });
             }
         }
@@ -388,6 +435,7 @@ impl Device {
             fed,
             stop: StopFields::from(&out),
             counter,
+            plain_call: plain,
         })
     }
 
