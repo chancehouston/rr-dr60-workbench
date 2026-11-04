@@ -398,9 +398,11 @@ fn null_end_paused() {
         let t = compare::null_test(&a, &b, Align::Latency).unwrap();
         assert_eq!(t.ends_paused, Some((false, true)));
         let p = t.prefix.expect("the end pause is a difference");
+        // On the report clock: the paused end is placed the heard shift H_B before B's end (the
+        // playback half's latency with the coder off: 0 at 6 kHz; engine 0.95, spec 028).
         assert_eq!(
             p.from + p.samples,
-            (b.samples.len() as i64 - t.s) as u64,
+            (b.samples.len() as i64 - i64::from(b.splice_shift_samples) - t.s) as u64,
             "{rate}"
         );
     }

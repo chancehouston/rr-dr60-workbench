@@ -107,6 +107,10 @@ pub struct Render {
     /// The speech coder's delay inside `latency_samples` (0 when it does not run at the tap):
     /// the gate reports' positions exclude it (spec 005b review B2).
     pub codec_delay_samples: u32,
+    /// Where a gate report is heard on the output, after its position: the coder's delay plus
+    /// the playback half's latency (engine 0.95's `one_pass_splice_output_position`, spec 028;
+    /// the reports' positions are on the clock before the coder).
+    pub splice_shift_samples: u32,
     /// Splices (drop mode) or muted regions (mute mode): Σ `BlockInfo.events`.
     pub splices_or_regions: u64,
     /// The engine's reports, positions from the start of the render.
@@ -449,6 +453,7 @@ pub fn render(
         playback_latency_samples: playback_latency,
         speech_codec: Pipeline::speech_codec_info(&p),
         codec_delay_samples: codec_delay(&p),
+        splice_shift_samples: splice_shift(&p),
         splices_or_regions: count,
         events,
         drop_mode: req.settings.vas.mode == VasMode::Drop,
@@ -473,22 +478,42 @@ pub fn codec_delay(p: &Pipeline) -> u32 {
     p.latency_samples() - Pipeline::one_pass_report_latency_samples(p)
 }
 
-/// The original (input) position for render position `o`, through the engine's map on the gate
-/// reports' clock (spec 008 D6): the reports' positions exclude the coder's delay `C`, so the
-/// output position is taken back by `C` and mapped with the latency less `C`. A splice is then
-/// counted when it reaches the output. With the coder off this is the engine's map unchanged.
-/// Returns `(input, clamped)` as `timeline::onepass_output_to_input` does.
+/// Where a gate report is heard on the output, after its position (engine 0.95, spec 028): the
+/// engine's `one_pass_splice_output_position` for a report at position 0, which is the coder's
+/// delay (when it runs) plus the playback half's latency.
+pub fn splice_shift(p: &Pipeline) -> u32 {
+    let at = p.one_pass_splice_output_position(&VasEvent::new(0, 0));
+    u32::try_from(at).expect("the shift is inside the latency")
+}
+
+/// The original (input) position for render position `o`: the engine's one-pass output map
+/// (engine 0.95's `one_pass_input_at_output`, spec 028), whose centre is the existing map on
+/// the reports' clock taken back by the heard shift (`splice_shift_samples`), so a removed
+/// pause is counted where it is heard. Arithmetic only, for per-frame use; `tests/ab.rs` binds
+/// it to the engine's centre on every output. Returns `(input, clamped)`, the flag the earlier
+/// map's (the output is before the latency), not the engine window's.
 pub fn output_to_input(o: u64, r: &Render) -> (u64, bool) {
-    let c = u64::from(r.codec_delay_samples);
-    if o < c {
+    let shift = u64::from(r.splice_shift_samples);
+    if o < shift {
         return (0, true);
     }
     rr_dr60::timeline::onepass_output_to_input(
-        o - c,
-        r.latency_samples.saturating_sub(r.codec_delay_samples),
+        o - shift,
+        r.latency_samples.saturating_sub(r.splice_shift_samples),
         &r.events,
         r.drop_mode,
     )
+}
+
+/// The engine's own alignment for render position `o` (engine 0.95's `one_pass_input_at_output`,
+/// spec 028): the centre and the direct-path window, from an engine built with the render's
+/// settings. For single reads (an export, a mark), not per frame.
+///
+/// # Errors
+///
+/// The engine's refusal of the render's settings or values.
+pub fn input_alignment(o: u64, r: &Render) -> Result<rr_dr60::timeline::InputAlignment, Error> {
+    Ok(fresh_engine(&r.request)?.one_pass_input_at_output(o, &r.events))
 }
 
 impl Render {

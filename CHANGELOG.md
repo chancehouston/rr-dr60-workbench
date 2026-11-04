@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (#27)
+
+- The engine pin moves to `7420389` (rr-dr60-emu 0.95.0, the merge of engine spec 028, the one-pass output map; engine issue #82).
+- **The A/B map and the splice marks follow the engine's one-pass output map.** A gate report is now heard at its position plus the coder's delay **plus the playback half's latency** (the engine's `one_pass_splice_output_position`; the earlier rule left out the playback half's latency: L_post outputs per splice too early in drop mode, 40 at 8 kHz and 241 at 48 kHz, exact at 6 kHz). `render::output_to_input` equals the engine's `one_pass_input_at_output` centre on every output (`tests/ab.rs::the_map_is_the_engines`); each render carries `splice_shift_samples`. The comparison's report alignment and its prefix (`compare::prefix_end`: B's reports map to A's as o + H_B − H_A − s, a paused end placed H before the take's end) use the same shift.
+- **The timeline CSV is form 2**: a gate report's row adds `heard`, `input_centre`, `input_first` and `input_last` (the engine's alignment where the report is heard, from one engine per export), and the comment line says the report positions are on the clock before the speech coder. Reach 77/77.
+
 ### Changed
 
 - The engine pin moves to `ce081b8` (rr-dr60-emu, the fix of engine issue #83: the meters' reach follows the requested route before it lands), and `render::meter_reach_for` no longer processes a silent sample.

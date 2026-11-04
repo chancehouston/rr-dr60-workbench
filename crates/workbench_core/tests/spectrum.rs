@@ -106,6 +106,7 @@ fn spectrum_identity_ratio_exact() {
     r.samples = delayed.into();
     r.latency_samples = l;
     r.codec_delay_samples = 0; // the synthetic render has no coder
+    r.splice_shift_samples = 0;
     r.events.clear();
     r.drop_mode = false;
     let p = spectrum::pair(&x, &r, (0, x.len() as u64)).unwrap();
@@ -168,8 +169,8 @@ fn spectrum_ratio_arithmetic() {
     // Independently: no render run holds a splice position or comes within the guard of one.
     let runs = spectrum::render_runs(p.range_out, &r);
     let guard = u64::from(r.playback_latency_samples);
-    // A splice reaches the output at its report position + the coder's delay (spec 008 D6).
-    let c = u64::from(r.codec_delay_samples);
+    // A splice is heard at its report position + the heard shift (engine 0.95, spec 028).
+    let c = u64::from(r.splice_shift_samples);
     for e in &r.events {
         let at = e.output_position + c;
         for &(a, b) in &runs {

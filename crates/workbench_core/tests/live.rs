@@ -350,6 +350,26 @@ fn timeline_lists_reports_and_skips() {
     let csv = workbench_core::csv::timeline_csv(&take);
     let rows = csv.lines().filter(|l| !l.starts_with('#')).count() - 1;
     assert_eq!(rows, take.log.len() + take.events.len() + live.skips.len());
+    // Form 2 (engine 0.95, spec 028): twelve fields per row; a gate report's row gives where it
+    // is heard and the engine's input alignment there.
+    assert!(csv.starts_with("# rr-dr60-workbench timeline 2\n"));
+    let p = workbench_core::render::fresh_engine(&take.request).unwrap();
+    let mut gate = take.events.iter();
+    for l in csv.lines().filter(|l| !l.starts_with('#')).skip(1) {
+        let f: Vec<&str> = l.split(',').collect();
+        assert_eq!(f.len(), 12, "{l}");
+        if f[0] == "splice" {
+            let e = gate.next().unwrap();
+            let heard = p.one_pass_splice_output_position(e);
+            let a = p.one_pass_input_at_output(heard, &take.events);
+            assert_eq!(
+                f[8..],
+                [heard, a.centre, a.first, a.last].map(|v| v.to_string()),
+                "{l}"
+            );
+        }
+    }
+    assert!(gate.next().is_none());
 }
 
 #[test]
