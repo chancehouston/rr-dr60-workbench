@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (010)
+
+- The engine pin moves to `ad1ba8d` (rr-dr60-emu 0.94.0, the merge of engine spec 027, the public re-render).
+
 ### Changed (008)
 
 - The engine pin moves to `3890bfe` (rr-dr60-emu 0.93.0, the merge of engine spec 026, the host reads).
