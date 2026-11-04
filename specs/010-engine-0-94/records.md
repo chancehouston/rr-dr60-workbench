@@ -1,6 +1,6 @@
 # Records: engine 0.94 adoption
 
-Recorded on 2026-11-04, with the engine at `ad1ba8d` (0.94.0).
+Recorded on 2026-11-04, with the engine at `ad1ba8d` (0.94.0). Merged as PR #24, merge commit `93e3791`, CI green (the agent merged it under the autopilot rule; the owner's desk checklist is pending).
 
 | Check | Result |
 |---|---|
