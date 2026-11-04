@@ -2896,7 +2896,7 @@ dependencies = [
 [[package]]
 name = "rr_dr60"
 version = "0.94.0"
-source = "git+https://github.com/chancehouston/rr-dr60-emu?rev=ad1ba8d401228c91480f12bd8ff3df68ac489e7f#ad1ba8d401228c91480f12bd8ff3df68ac489e7f"
+source = "git+https://github.com/chancehouston/rr-dr60-emu?rev=ce081b823f0f9a876ce12561d5860f95aa3924d5#ce081b823f0f9a876ce12561d5860f95aa3924d5"
 dependencies = [
  "rr_dr60_detmath",
 ]
@@ -2904,7 +2904,7 @@ dependencies = [
 [[package]]
 name = "rr_dr60_detmath"
 version = "0.94.0"
-source = "git+https://github.com/chancehouston/rr-dr60-emu?rev=ad1ba8d401228c91480f12bd8ff3df68ac489e7f#ad1ba8d401228c91480f12bd8ff3df68ac489e7f"
+source = "git+https://github.com/chancehouston/rr-dr60-emu?rev=ce081b823f0f9a876ce12561d5860f95aa3924d5#ce081b823f0f9a876ce12561d5860f95aa3924d5"
 
 [[package]]
 name = "rr_dr60_workbench"

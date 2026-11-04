@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The engine pin moves to `ce081b8` (rr-dr60-emu, the fix of engine issue #83: the meters' reach follows the requested route before it lands), and `render::meter_reach_for` no longer processes a silent sample.
+
 ### Changed (010)
 
 - The engine pin moves to `ad1ba8d` (rr-dr60-emu 0.94.0, the merge of engine spec 027, the public re-render).

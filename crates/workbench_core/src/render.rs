@@ -317,16 +317,15 @@ pub fn meter_reach_and_lag(p: &Pipeline) -> ([bool; 13], [Option<u32>; 13]) {
     )
 }
 
-/// The meter reach and lag for a request: a throwaway engine built from it, one silent sample
-/// processed so the start's plain setters (the route) have landed (outside any audio callback).
+/// The meter reach and lag for a request: a throwaway engine built from it (outside any audio
+/// callback). The engine's reach follows the requested route before it lands (engine issue #83),
+/// so no sample is processed.
 ///
 /// # Errors
 ///
 /// The engine's refusal of the request's settings or values.
 pub fn meter_reach_for(req: &RenderRequest) -> Result<([bool; 13], [Option<u32>; 13]), Error> {
-    let mut p = fresh_engine(req)?;
-    let mut out = [0.0f32; 1];
-    let _ = p.process(&[0.0], &mut out)?;
+    let p = fresh_engine(req)?;
     Ok(meter_reach_and_lag(&p))
 }
 
