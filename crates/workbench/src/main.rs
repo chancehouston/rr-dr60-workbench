@@ -122,6 +122,10 @@ struct Workbench {
     device: Option<workbench_core::device::Device>,
     device_take: Option<workbench_core::device::PlayTake>,
     record_start_s: f64,
+    /// 010 D5: the remaining capacity the memory view's fill leaves, seconds.
+    fill_leave_s: f64,
+    /// 010 D5: the recording counter a device reset starts at.
+    reset_counter: u64,
     device_item: Option<u32>,
     live_start_s: f64,
     schedule: Vec<(u32, f64, f64)>,
@@ -160,6 +164,8 @@ impl Workbench {
             device: None,
             device_take: None,
             record_start_s: 0.0,
+            fill_leave_s: 1.0,
+            reset_counter: 0,
             device_item: None,
             live_start_s: 0.0,
             schedule: Vec::new(),
@@ -1998,6 +2004,25 @@ impl Workbench {
                     self.device = Device::new(settings).ok();
                     self.device_take = None;
                 }
+                ui.label("at counter");
+                ui.add(egui::DragValue::new(&mut self.reset_counter).range(0..=u64::MAX / 2));
+                if ui
+                    .button("Reset device at counter")
+                    .on_hover_text(
+                        "An addition of the emulator (the device has no such control): an empty \
+                         device whose next recording uses this recording counter's hiss stream, \
+                         as a device that had recorded that many times",
+                    )
+                    .clicked()
+                {
+                    match Device::new_at_counter(settings, self.reset_counter) {
+                        Ok(d) => {
+                            self.device = Some(d);
+                            self.device_take = None;
+                        }
+                        Err(e) => self.messages = vec![e.to_string()],
+                    }
+                }
             }
         });
         if self.live_play.is_some() {
@@ -2011,14 +2036,43 @@ impl Workbench {
         };
         let st = dev.status();
         ui.label(format!(
-            "Memory: {} of {} device samples used ({:.1} of {:.1} s), {} items, {} slots left",
+            "Memory: {} of {} device samples used ({:.1} of {:.1} s), {} items, {} slots left, \
+             encoding: {}",
             st.used_samples,
             st.capacity_samples,
             st.used_samples as f64 / 6000.0,
             st.capacity_samples as f64 / 6000.0,
             st.count,
-            st.slots_remaining
+            st.slots_remaining,
+            match dev.encoding() {
+                rr_dr60::Encoding::Frames => "speech coder frames",
+                rr_dr60::Encoding::Samples => "device samples",
+                _ => "unknown",
+            }
         ));
+        ui.horizontal(|ui| {
+            ui.label("leave (s)");
+            ui.add(
+                egui::DragValue::new(&mut self.fill_leave_s)
+                    .range(0.0..=36_000.0)
+                    .speed(0.1),
+            );
+            if ui
+                .button("Fill the memory")
+                .on_hover_text(
+                    "An addition of the emulator (the device has no such control): writes one \
+                     filler item (content unspecified, no run; its record reads as imported) so \
+                     that at least this much capacity remains, for exploring a nearly full \
+                     memory and the self-stop",
+                )
+                .clicked()
+            {
+                let remaining = (self.fill_leave_s * 6000.0).round() as u64;
+                if let Err(e) = dev.fill_to_remaining(remaining) {
+                    self.messages = vec![e.to_string()];
+                }
+            }
+        });
         ui.horizontal(|ui| {
             ui.label("record from (s)");
             ui.add(
@@ -2609,10 +2663,9 @@ impl Workbench {
         let samples = inp.samples.clone();
         let span = prep.span.clone();
         let total = span.len() as u64;
-        let digest = prep.readout.recording_digest;
         std::thread::spawn(move || {
-            let r = records::re_render(&prep.recipe, digest, &samples[span], &p, &c)
-                .map_err(|e| e.to_string());
+            let r =
+                records::re_render(prep.plan, &samples[span], &p, &c).map_err(|e| e.to_string());
             let _ = tx.send(r);
             ctx2.request_repaint();
         });
@@ -2634,14 +2687,14 @@ impl Workbench {
             self.rerender = None;
             self.messages.push(match r {
                 Ok(o) => format!(
-                    "{}: record {:016x}, re-render {:016x}",
+                    "{}: record {:016x}, re-render {:016x}, {} rows landed",
                     match (o.reproduces(), note) {
-                        (true, _) => "Reproduces".to_owned(),
-                        (false, Some(n)) => format!("Differs ({n})"),
-                        (false, None) => "Differs".to_owned(),
+                        (false, Some(n)) => format!("{} ({n})", o.verdict_words()),
+                        _ => o.verdict_words().to_owned(),
                     },
                     o.expected,
-                    o.digest
+                    o.digest,
+                    o.rows_landed
                 ),
                 Err(e) => e,
             });

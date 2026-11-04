@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use rr_dr60::changes::{ChangeEntry, Clock, MAX_CHANGES_PER_CALL};
 use rr_dr60::record::{self, RecordReadout, RunData, StopFields, flags};
-use rr_dr60::{Pipeline, Settings, StopResult, Stream, VasEvent};
+use rr_dr60::rerender::{Plan, Verdict};
+use rr_dr60::{Pipeline, Settings, Stream, VasEvent};
 use support::*;
 use workbench_core::device::{Device, RecordEnd};
 use workbench_core::input::Input;
-use workbench_core::records::{self, FeedPoint, ReRenderError, Recipe, RunSource};
+use workbench_core::records::{self, FeedPoint, ReRenderError, RunSource};
 use workbench_core::render::{Scheduled, block_for};
 
 fn idx(id: &str) -> u32 {
@@ -129,25 +130,31 @@ fn readout(bytes: &[u8]) -> RecordReadout {
 
 fn re_render(f: &records::RecordFiles, input: &Input) -> Result<records::Outcome, ReRenderError> {
     let prep = records::prepare(&f.record, &f.input_text, input)?;
-    run_recipe(
-        &prep.recipe,
-        prep.readout.recording_digest,
-        &input.samples[prep.span],
-    )
+    run_plan(prep.plan, &input.samples[prep.span])
 }
 
-fn run_recipe(
-    recipe: &Recipe,
-    expected: u64,
-    fed: &[f32],
-) -> Result<records::Outcome, ReRenderError> {
-    records::re_render(
-        recipe,
-        expected,
-        fed,
-        &AtomicU64::new(0),
-        &AtomicBool::new(false),
-    )
+fn run_plan(plan: Plan, fed: &[f32]) -> Result<records::Outcome, ReRenderError> {
+    records::re_render(plan, fed, &AtomicU64::new(0), &AtomicBool::new(false))
+}
+
+/// Re-signs an edited record (spec 020's checksum line), as the engine's own test does.
+fn resign(bytes: Vec<u8>) -> Vec<u8> {
+    let body_end = bytes[..bytes.len() - 1]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .unwrap()
+        + 1;
+    let h = rr_dr60::digest::fnv1a64(&bytes[..body_end]);
+    let mut v = bytes[..body_end].to_vec();
+    v.extend_from_slice(format!("record_checksum = fnv1a64:{h:016x}\n").as_bytes());
+    v
+}
+
+/// The plan's settings edited by `edit`.
+fn with_settings(p: &mut Plan, edit: impl Fn(&mut Settings)) {
+    let mut s = *p.settings();
+    edit(&mut s);
+    p.set_settings(s).unwrap();
 }
 
 /// A direct engine's record for the same input and calls (the oracle of AS1).
@@ -224,6 +231,11 @@ fn re_render_reproduces() {
             let o = re_render(&f, &input).unwrap();
             assert!(o.reproduces(), "{rate} {cell:?}: {o:?}");
             assert_eq!(
+                (o.verdict, o.verdict_words()),
+                (Verdict::Identical, "Reproduces"),
+                "{rate} {cell:?}"
+            );
+            assert_eq!(
                 o.expected,
                 d.items()[n as usize - 1].digest,
                 "{rate} {cell:?}"
@@ -232,13 +244,12 @@ fn re_render_reproduces() {
     }
 }
 
-fn base(rate: u32, cell: Cell) -> (records::RecordFiles, Input, Recipe, u64) {
+fn base(rate: u32, cell: Cell) -> (records::RecordFiles, Input, Plan) {
     let input = input_of(rate, &stimulus(rate, cell));
     let (d, n) = recorded(rate, cell, &input, 0);
     let f = save(&d, n, &input);
     let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
-    let expected = prep.readout.recording_digest;
-    (f, input, prep.recipe, expected)
+    (f, input, prep.plan)
 }
 
 #[test]
@@ -251,20 +262,22 @@ fn re_render_detects_deltas() {
     };
     for rate in RATES {
         let block = rate.div_ceil(6000);
-        let differs = |cell: Cell, what: &str, edit: &dyn Fn(&mut Recipe)| {
-            let (_, input, mut recipe, expected) = base(rate, cell);
-            edit(&mut recipe);
-            let o = run_recipe(&recipe, expected, &input.samples).unwrap();
+        let differs = |cell: Cell, what: &str, edit: &dyn Fn(&mut Plan)| {
+            let (_, input, mut plan) = base(rate, cell);
+            edit(&mut plan);
+            assert!(plan.edited(), "{rate} {what}: the plan is edited");
+            let o = run_plan(plan, &input.samples).unwrap();
             assert!(
                 !o.reproduces(),
                 "{rate} {what}: the delta did not change the digest"
             );
+            assert_eq!(o.verdict, Verdict::Rebuilt, "{rate} {what}");
         };
-        differs(plain, "seed", &|r| {
-            r.settings.seed = r.settings.seed.wrapping_add(1)
+        differs(plain, "seed", &|p| p.set_seed(p.seed().wrapping_add(1)));
+        differs(plain, "counter", &|p| p.set_counter(p.counter() + 1));
+        differs(plain, "knee", &|p| {
+            with_settings(p, |s| s.agc.knee_dbfs = -30.0)
         });
-        differs(plain, "counter", &|r| r.counter += 1);
-        differs(plain, "knee", &|r| r.settings.agc.knee_dbfs = -30.0);
         // The threshold: voice, then a 1 kHz tone of amplitude 0.00708 (−43.0 dBFS), in the middle
         // of the window where the gate pauses under the record's −40 dBFS threshold and not under
         // the delta's −43 at every rate (post-implementation review B2: the edges run −40.73 …
@@ -286,9 +299,11 @@ fn re_render_detects_deltas() {
             );
             let f = save(&d, n, &input);
             let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
-            let mut recipe = prep.recipe.clone();
-            recipe.settings.vas.threshold_dbfs -= 3.0;
-            let o = run_recipe(&recipe, prep.readout.recording_digest, &input.samples).unwrap();
+            let mut plan = prep.plan.clone();
+            with_settings(&mut plan, |s| s.vas.threshold_dbfs -= 3.0);
+            assert!(plan.edited(), "{rate} threshold: the plan is edited");
+            let o = run_plan(plan, &input.samples).unwrap();
+            assert_eq!(o.verdict, Verdict::Rebuilt, "{rate} threshold");
             assert!(
                 !o.reproduces(),
                 "{rate} threshold: the delta did not change the digest"
@@ -298,25 +313,47 @@ fn re_render_detects_deltas() {
             changes: true,
             ..plain
         };
-        differs(changes_off, "hiss entry moved", &|r| {
-            let h = idx("mic.hiss_offset_db");
-            let e = r.changes.iter_mut().find(|e| e.control == h).unwrap();
-            e.position += u64::from(block);
-        });
+        let moved = |control: u32, by: u64| {
+            move |p: &mut Plan| {
+                let i = p.rows().iter().position(|e| e.control == control).unwrap();
+                let mut e = p.rows()[i];
+                e.position += by;
+                p.set_row(i, e).unwrap();
+            }
+        };
+        differs(
+            changes_off,
+            "hiss entry moved",
+            &moved(idx("mic.hiss_offset_db"), u64::from(block)),
+        );
         let changes_on = Cell {
             codec: true,
             changes: true,
             ..plain
         };
-        differs(changes_on, "knee entry moved", &|r| {
-            let k = idx("agc.knee_dbfs");
-            let e = r.changes.iter_mut().find(|e| e.control == k).unwrap();
-            e.position += u64::from(rate) / 10;
-        });
+        differs(
+            changes_on,
+            "knee entry moved",
+            &moved(idx("agc.knee_dbfs"), u64::from(rate) / 10),
+        );
+        // The stop one frame earlier: the plan has no setter for the stop, so the record's line
+        // is edited and re-signed (an unedited plan of another record: `Differs`).
         for codec in [false, true] {
-            differs(Cell { codec, ..plain }, "stop earlier", &|r| {
-                r.stop.stop_input_position -= 120 * u64::from(rate) / 6000;
-            });
+            let (f, input, _) = base(rate, Cell { codec, ..plain });
+            let text = String::from_utf8(f.record.clone()).unwrap();
+            let key = "run.stop_input_position = ";
+            let i = text.find(key).unwrap() + key.len();
+            let j = i + text[i..].find('\n').unwrap();
+            let stop: u64 = text[i..j].parse().unwrap();
+            let earlier = stop - 120 * u64::from(rate) / 6000;
+            let bytes = resign(format!("{}{earlier}{}", &text[..i], &text[j..]).into_bytes());
+            let o = run_plan(Plan::from_record(&bytes).unwrap(), &input.samples).unwrap();
+            assert!(!o.reproduces(), "{rate} codec {codec}: stop earlier");
+            assert_eq!(
+                (o.verdict, o.verdict_words()),
+                (Verdict::Differs, "Differs"),
+                "{rate} codec {codec}"
+            );
         }
         // No fill: a self-stop after one prior item, so the fill is needed (missing > 0).
         let ss = Cell {
@@ -334,25 +371,31 @@ fn re_render_detects_deltas() {
         };
         let f = save(&d, number, &input);
         let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
-        let fresh = Pipeline::new(prep.recipe.settings).unwrap();
+        let fresh = Pipeline::new(*prep.plan.settings()).unwrap();
+        let full = fresh.memory_status().remaining_samples;
         assert!(
-            fresh.memory_status().remaining_samples > prep.recipe.remaining_at_start,
+            full > prep.plan.remaining_samples(),
             "{rate}: the fill is needed"
         );
-        let ok = run_recipe(&prep.recipe, prep.readout.recording_digest, &input.samples).unwrap();
+        let ok = run_plan(prep.plan.clone(), &input.samples).unwrap();
         assert!(ok.reproduces(), "{rate}: with the fill");
-        let mut nofill = prep.recipe.clone();
-        nofill.fill = false;
-        let o = run_recipe(&nofill, prep.readout.recording_digest, &input.samples).unwrap();
+        assert_eq!(ok.verdict, Verdict::Identical, "{rate}");
+        // No fill: the plan's remaining capacity set to the empty memory's.
+        let mut nofill = prep.plan.clone();
+        nofill.set_remaining_samples(full);
+        let o = run_plan(nofill, &input.samples).unwrap();
         assert!(!o.reproduces(), "{rate}: no fill");
-        // The twin in the record's settings: the output clamp still reproduces.
-        let (_, input, mut recipe, expected) = base(rate, plain);
-        recipe.settings.output.clamp_enabled = !recipe.settings.output.clamp_enabled;
-        assert!(
-            run_recipe(&recipe, expected, &input.samples)
-                .unwrap()
-                .reproduces(),
-            "{rate}: the clamp twin"
+        // The twin in the record's settings: the output clamp still reproduces (an edited plan
+        // that matches the original).
+        let (_, input, mut plan) = base(rate, plain);
+        with_settings(&mut plan, |s| {
+            s.output.clamp_enabled = !s.output.clamp_enabled
+        });
+        let o = run_plan(plan, &input.samples).unwrap();
+        assert!(o.reproduces(), "{rate}: the clamp twin");
+        assert_eq!(
+            (o.verdict, o.verdict_words()),
+            (Verdict::Rebuilt, "Rebuilt, matching the original")
         );
     }
 }
@@ -401,7 +444,7 @@ fn re_render_refuses_other_input() {
         mute: false,
         self_stop: false,
     };
-    let (f, input, _, _) = base(rate, cell);
+    let (f, input, _) = base(rate, cell);
     let other = input_of(rate, &tone(rate, 1.5, 0.2));
     let e = re_render(&f, &other).unwrap_err();
     assert_eq!(e, ReRenderError::OtherInput("voice.wav".into()));
@@ -525,13 +568,12 @@ fn feed_point_rule() {
             .zip(&input.samples[..fed])
             .all(|(a, b)| a.to_bits() == b.to_bits())
     );
-    // The engine's own recipe feeds the decoded span from 0: the same digest.
+    // The engine's session fed the decoded span from 0: the same digest.
     let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
-    assert!(
-        run_recipe(&prep.recipe, prep.readout.recording_digest, &back)
-            .unwrap()
-            .reproduces()
-    );
+    assert!(run_plan(prep.plan.clone(), &back).unwrap().reproduces());
+    // The engine's 24-bit feed of the same codes: the same digest.
+    let session = rr_dr60::rerender::re_render(prep.plan, &i24).unwrap();
+    assert!(session.outcome().unwrap().matches_original);
     // A float input off the grid: f32, no span.
     let fl = workbench_core::input::open_bytes(
         "voice32.wav",
@@ -571,7 +613,7 @@ fn re_render_from_offset() {
         assert_eq!(ri.start, Some(start as u64));
         assert!(re_render(&f, &input).unwrap().reproduces(), "{rate}");
         // The .i24 span is the fed span from the start (review B5), and it re-renders alone, fed
-        // from 0 as the engine's own recipes feed it.
+        // from 0 as the engine's session feeds it.
         assert_eq!(ri.feed_point, FeedPoint::I24);
         let i24: Vec<i32> = f
             .i24
@@ -594,9 +636,7 @@ fn re_render_from_offset() {
         );
         let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
         assert!(
-            run_recipe(&prep.recipe, prep.readout.recording_digest, &back)
-                .unwrap()
-                .reproduces(),
+            run_plan(prep.plan, &back).unwrap().reproduces(),
             "{rate}: from the .i24 span"
         );
     }
@@ -642,21 +682,34 @@ fn plain_cell() -> Cell {
 
 #[test]
 fn re_render_unknown_component() {
-    let (f, _, _, _) = base(6000, plain_cell());
+    let (f, _, _) = base(6000, plain_cell());
     let mut r = readout(&f.record);
     r.flags |= flags::UNKNOWN_COMPONENT;
     assert_eq!(
-        Recipe::of(&f.record, &r).unwrap_err(),
+        records::plan_of(&f.record, &r).unwrap_err(),
         ReRenderError::UnknownComponent
+    );
+}
+
+/// 010: the engine's session refuses an input that ends before the record's stop (it no longer
+/// stops early and reports a difference), in words.
+#[test]
+fn re_render_input_short() {
+    let (_, input, plan) = base(6000, plain_cell());
+    let stop = plan.readout().stop.stop_input_position as usize;
+    let e = run_plan(plan, &input.samples[..stop - 100]).unwrap_err();
+    assert_eq!(e, ReRenderError::InputShort(100));
+    assert_eq!(
+        e.to_string(),
+        "The session's input ends 100 host samples before the record's stop"
     );
 }
 
 #[test]
 fn re_render_cancel() {
-    let (_, input, recipe, expected) = base(6000, plain_cell());
+    let (_, input, plan) = base(6000, plain_cell());
     let e = records::re_render(
-        &recipe,
-        expected,
+        plan,
         &input.samples,
         &AtomicU64::new(0),
         &AtomicBool::new(true),
@@ -708,28 +761,26 @@ fn slot_restored() {
             .unwrap();
         let f = save(&d, 1, &input);
         let prep = records::prepare(&f.record, &f.input_text, &input).unwrap();
-        let expected = prep.readout.recording_digest;
-        assert_eq!(prep.recipe.component, ComponentId::BandFilter, "{rate}");
+        assert_eq!(prep.plan.component(), ComponentId::BandFilter, "{rate}");
         assert!(
-            run_recipe(&prep.recipe, expected, &input.samples)
+            run_plan(prep.plan.clone(), &input.samples)
                 .unwrap()
                 .reproduces(),
             "{rate}: the slot restored"
         );
-        let mut none = prep.recipe.clone();
-        none.component = ComponentId::None;
+        let mut none = prep.plan.clone();
+        none.set_component(ComponentId::None);
         assert!(
-            !run_recipe(&none, expected, &input.samples)
-                .unwrap()
-                .reproduces(),
+            !run_plan(none, &input.samples).unwrap().reproduces(),
             "{rate}: no component"
         );
-        let mut moved = prep.recipe.clone();
-        moved.store[1] = (moved.store[1] * 1.5).min(20_000.0);
+        let mut moved = prep.plan.clone();
+        let f1 = moved.parameter(1).unwrap();
+        moved
+            .set_parameter(1, f64::from((f1 * 1.5).min(20_000.0)))
+            .unwrap();
         assert!(
-            !run_recipe(&moved, expected, &input.samples)
-                .unwrap()
-                .reproduces(),
+            !run_plan(moved, &input.samples).unwrap().reproduces(),
             "{rate}: the frequency moved"
         );
         if rate == 48_000 {
@@ -773,21 +824,6 @@ fn plain_panel(rate: u32) -> workbench_core::panel::Panel {
     set_num(&mut p, "memory.capacity_s", 2.0);
     set_switch(&mut p, "speech_codec_enabled", false);
     p
-}
-
-#[test]
-fn filler_has_the_length() {
-    for enc in [rr_dr60::Encoding::Samples, rr_dr60::Encoding::Frames] {
-        let units = 7u64;
-        let samples = units * enc.unit_samples() as u64;
-        let bytes = records::filler(enc, samples).unwrap();
-        let mut s = Settings::new(6000);
-        s.speech_codec_enabled = enc == rr_dr60::Encoding::Frames;
-        let mut p = Pipeline::new(s).unwrap();
-        let n = p.import(&bytes).unwrap();
-        assert_eq!(p.recording_length(n).unwrap(), samples);
-        let _ = StopResult::DiscardedEmpty;
-    }
 }
 
 // --- US2 ---
@@ -983,7 +1019,7 @@ fn record_input_roundtrip_and_refusals() {
         mute: false,
         self_stop: false,
     };
-    let (f, _, _, _) = base(rate, cell);
+    let (f, _, _) = base(rate, cell);
     let ri = records::read_record_input(&f.input_text).unwrap();
     assert_eq!(records::write_record_input(&ri), f.input_text);
     assert_eq!(ri.host_rate, rate);
@@ -1053,7 +1089,7 @@ fn companion_paths_beside_the_record() {
 /// C8: a record's −0.0 equals the panel's 0.0 in the settings diff.
 #[test]
 fn negative_zero_equals_zero() {
-    let (f, _, _, _) = base(6000, plain_cell());
+    let (f, _, _) = base(6000, plain_cell());
     let mut r = readout(&f.record);
     r.settings.mic.hiss_offset_db = -0.0;
     let mut panel = workbench_core::panel::Panel::new(6000).unwrap();
@@ -1067,4 +1103,24 @@ fn negative_zero_equals_zero() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// 010 FR-002 / SC-002: `records.rs` keeps no copy of the engine's recipe (the engine's session
+/// does the fill, the slot restore, the schedule's refill and the stop).
+#[test]
+fn no_recipe_copy() {
+    let src =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/records.rs")).unwrap();
+    for w in [
+        "fn filler(",
+        "pending_changes(Stream::Record)",
+        "stop_recording(",
+        "schedule_change(",
+        ".import(",
+        "new_at_counter(",
+        "struct Recipe",
+    ] {
+        assert!(!src.contains(w), "records.rs still holds {w}");
+    }
+    assert!(src.contains("ReRender::new(") && src.contains(".feed_f32("));
 }
