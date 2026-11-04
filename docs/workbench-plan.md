@@ -23,6 +23,7 @@ methods and 15 stages. The shell lists the control manifest read-only.
 | 006 | **Coverage close-out** (done 2026-11-03: 70/70) | The `Pipeline` reach test at 100 % (constitution II): every remaining method. A guided tour of the stages. | 001–005b |
 | 008 | **Engine 0.93 adoption** (done 2026-11-03: 74/74) | The pin to `3890bfe`; the engine's host reads (engine spec 026) replace the mirrors of #72 – #75, #78, #79. | 001–007 |
 | 010 | **Engine 0.94 adoption** (2026-11-04: 75/75) | The pin to `ad1ba8d`; the engine's re-render session (engine spec 027) replaces the copied recipe (#23); the fill, the reset at a counter and the encoding in the memory view. | 008 |
+| 010b | **Engine 0.95 adoption** (2026-11-04: 77/77; #27) | The pin to `7420389`; the A/B map, the marks and the comparison follow the engine's one-pass output map (engine spec 028); the timeline CSV form 2. | 010 |
 
 ## Standing rules
 

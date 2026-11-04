@@ -81,9 +81,9 @@ fn the_map_is_exact() {
         let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "drop")));
         assert!(!r.events.is_empty());
         let n_out = r.samples.len() as u64;
-        // The reports' clock (spec 008 D6): positions exclude the coder's delay C; a splice
-        // reaches the output at its position + C.
-        let c = u64::from(r.codec_delay_samples);
+        // The reports' clock (engine 0.95, spec 028): a splice is heard at its position plus the
+        // heard shift H (the coder's delay plus the playback half's latency).
+        let c = u64::from(r.splice_shift_samples);
         let l = u64::from(r.latency_samples) - c;
         // The removed input ranges, in input positions.
         let mut removed = Vec::new();
@@ -133,8 +133,11 @@ fn the_map_counts_a_splice_at_the_output() {
         let gap = vec![0.0f32; 3 * rate as usize];
         let x = [b.clone(), gap, b].concat();
         let r = run(&request(rate, &x, |p| set_choice(p, "vas.mode", "drop")));
-        let c = u64::from(r.codec_delay_samples);
-        assert!(c > 0, "{rate}: the coder runs by default");
+        let c = u64::from(r.splice_shift_samples);
+        assert!(
+            r.codec_delay_samples > 0,
+            "{rate}: the coder runs by default"
+        );
         let e = r.events[0];
         let at_output = e.output_position + c;
         let (mut new_loud, mut old_loud) = (0, 0);
@@ -233,5 +236,74 @@ fn the_mute_marks_sit_on_the_output_step() {
             "{rate}: the old map's end {} is not",
             end - c
         );
+    }
+}
+
+/// Engine 0.95 (spec 028, workbench #27): the workbench's per-frame map is the engine's one-pass
+/// output map. On every output of drop- and mute-mode renders, coder on and off, at 6, 8 and
+/// 48 kHz, `render::output_to_input` equals `one_pass_input_at_output`'s centre, each
+/// mark sits on `one_pass_splice_output_position`, and the heard shift is the coder's delay plus
+/// the playback half's latency (0 at 6 kHz).
+#[test]
+fn the_map_is_the_engines() {
+    for rate in [6000, 8000, 48_000] {
+        let b = voiced(rate, 0.4, 0.5);
+        let gap = vec![0.0f32; 2 * rate as usize];
+        let x = [b.clone(), gap.clone(), b.clone(), gap, b].concat();
+        for mode in ["drop", "mute"] {
+            for codec in [true, false] {
+                let r = run(&request(rate, &x, |p| {
+                    set_choice(p, "vas.mode", mode);
+                    set_switch(p, "speech_codec_enabled", codec);
+                }));
+                assert!(!r.events.is_empty(), "{rate} {mode} {codec}");
+                let p = workbench_core::render::fresh_engine(&r.request).unwrap();
+                let lpost = if rate == 6000 {
+                    0
+                } else {
+                    p.playback_latency_samples()
+                };
+                assert_eq!(
+                    r.splice_shift_samples,
+                    r.codec_delay_samples + lpost,
+                    "{rate} {mode} {codec}"
+                );
+                let mut differs_from_coder_only = 0u32;
+                for o in 0..r.samples.len() as u64 {
+                    let a = p.one_pass_input_at_output(o, &r.events);
+                    // The centre (the engine's `clamped` is its window's flag at the stream's
+                    // start, a different reading from the earlier map's).
+                    let (i, _) = workbench_core::render::output_to_input(o, &r);
+                    assert_eq!(i, a.centre, "{rate} {mode} {codec} {o}");
+                    let c = u64::from(r.codec_delay_samples);
+                    let old = if o < c {
+                        0
+                    } else {
+                        rr_dr60::timeline::onepass_output_to_input(
+                            o - c,
+                            r.latency_samples - r.codec_delay_samples,
+                            &r.events,
+                            r.drop_mode,
+                        )
+                        .0
+                    };
+                    differs_from_coder_only += u32::from(old != i);
+                }
+                let marks = ab::marks(&r);
+                for (m, e) in marks.iter().zip(&r.events) {
+                    assert_eq!(m.output_position, p.one_pass_splice_output_position(e));
+                }
+                // The old coder-only rule was off on L_post outputs per splice in drop mode.
+                let want = if mode == "drop" {
+                    r.events.len() as u32 * lpost
+                } else {
+                    0
+                };
+                println!(
+                    "{rate} {mode} codec {codec}: coder-only rule off on {differs_from_coder_only} outputs"
+                );
+                assert_eq!(differs_from_coder_only, want, "{rate} {mode} {codec}");
+            }
+        }
     }
 }

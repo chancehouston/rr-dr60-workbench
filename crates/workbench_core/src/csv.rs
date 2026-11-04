@@ -171,12 +171,14 @@ pub fn write_with_sidecar(
 }
 
 /// The live take's timeline (spec 003 D6): the change log, the gate's reports and the budget's
-/// skips, in that order, one row each.
+/// skips, in that order, one row each. Form 2 (engine 0.95, spec 028): a gate report's row also
+/// gives where it is heard on the output and the engine's input alignment there (the input where
+/// the sound resumes or the region begins, and its direct-path window).
 pub fn timeline_csv(r: &Render) -> String {
-    let mut s = String::from("# rr-dr60-workbench timeline 1\n");
+    let mut s = String::from("# rr-dr60-workbench timeline 2\n");
     s += &engine_line(r);
-    s += "# change positions in their control's clock from the run's start; gate reports and skips in the take's output positions\n";
-    s += "kind,clock,position,control,before,after,tag,length\n";
+    s += "# change positions in their control's clock from the run's start; gate report positions on the clock before the speech coder, heard at the take's output position `heard`; skips in the take's output positions\n";
+    s += "kind,clock,position,control,before,after,tag,length,heard,input_centre,input_first,input_last\n";
     for e in &r.log {
         let clock = match rr_dr60::changes::clock_of(e.control) {
             Ok(rr_dr60::changes::Clock::Input) => "in",
@@ -187,7 +189,7 @@ pub fn timeline_csv(r: &Render) -> String {
             .map_or("unknown", |c| c.identifier);
         let _ = writeln!(
             s,
-            "change,{clock},{},{id},{},{},{},",
+            "change,{clock},{},{id},{},{},{},,,,,",
             e.position, e.before, e.after, e.tag
         );
     }
@@ -197,11 +199,20 @@ pub fn timeline_csv(r: &Render) -> String {
         } else {
             "muted_region"
         };
-        let _ = writeln!(s, "{kind},out,{},,,,,{}", e.output_position, e.input_length);
+        let heard = e.output_position + u64::from(r.splice_shift_samples);
+        let align = crate::render::input_alignment(heard, r).map_or_else(
+            |_| ",,".to_owned(),
+            |a| format!("{},{},{}", a.centre, a.first, a.last),
+        );
+        let _ = writeln!(
+            s,
+            "{kind},out,{},,,,,{},{heard},{align}",
+            e.output_position, e.input_length
+        );
     }
     if let Some(l) = &r.live {
         for (at, n) in &l.skips {
-            let _ = writeln!(s, "skip,out,{at},,,,,{n}");
+            let _ = writeln!(s, "skip,out,{at},,,,,{n},,,,");
         }
     }
     s

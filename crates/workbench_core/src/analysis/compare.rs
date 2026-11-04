@@ -209,9 +209,10 @@ pub fn overlap(len_a: u64, len_b: u64, s: i64) -> (u64, u64) {
 }
 
 /// A render's gate reports in input terms: (input position, input length). The reports'
-/// positions exclude the speech coder's delay, so they map with the latency less it (review B2).
+/// positions are on the clock before the coder, so they map with the latency less the heard
+/// shift (review B2; engine 0.95, spec 028).
 fn reports(r: &Render) -> Vec<(u64, u64)> {
-    let pre = r.latency_samples - r.codec_delay_samples;
+    let pre = r.latency_samples - r.splice_shift_samples;
     r.events
         .iter()
         .map(|e| {

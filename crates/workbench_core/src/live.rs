@@ -771,6 +771,7 @@ impl TakeBuilder {
             playback_latency_samples: p.playback_latency_samples(),
             speech_codec: Pipeline::speech_codec_info(&p),
             codec_delay_samples: render::codec_delay(&p),
+            splice_shift_samples: render::splice_shift(&p),
             splices_or_regions: splices,
             drop_mode: request.settings.vas.mode == rr_dr60::VasMode::Drop,
             gate_reached: request.settings.one_pass_vas_runs(),

@@ -1,9 +1,10 @@
 //! The A/B position map (spec 001 D6, FR-010; research R-06).
 //!
-//! Render → original is the engine's `timeline::onepass_output_to_input` on the gate reports'
-//! clock (`render::output_to_input`, spec 008 D6). Original → render inverts it by binary search
-//! on the unclamped key `o + removed(o − C)` (C the coder's delay inside the latency), which is
-//! strictly increasing in `o`, so input 0 maps to the latency and not to 0.
+//! Render → original is the engine's one-pass output map (engine 0.95, spec 028;
+//! `render::output_to_input`). Original → render inverts it by binary search on the unclamped
+//! key `o + removed(o − H)` (H the heard shift: the coder's delay plus the playback half's
+//! latency, `Render::splice_shift_samples`), which is strictly increasing in `o`, so input 0 maps
+//! to the latency and not to 0 (the engine guide's bisection).
 
 use rr_dr60::VasEvent;
 
@@ -41,27 +42,27 @@ pub fn to_render(i: u64, r: &Render, mode: AbMode) -> u64 {
     to_render_raw(
         i,
         u64::from(r.latency_samples),
-        u64::from(r.codec_delay_samples),
+        u64::from(r.splice_shift_samples),
         &r.events,
         r.drop_mode,
         len,
     )
 }
 
-/// [`to_render`] on raw parts (the tests' entry point): `codec` is the coder's delay inside
-/// `latency` (the reports' positions exclude it).
+/// [`to_render`] on raw parts (the tests' entry point): `shift` is the heard shift inside
+/// `latency` (a report is heard `shift` after its position).
 pub fn to_render_raw(
     i: u64,
     latency: u64,
-    codec: u64,
+    shift: u64,
     events: &[VasEvent],
     drop: bool,
     len: u64,
 ) -> u64 {
     let target = i + latency;
     let key = |o: u64| {
-        o + if o >= codec {
-            removed(o - codec, events, drop)
+        o + if o >= shift {
+            removed(o - shift, events, drop)
         } else {
             0
         }
@@ -99,11 +100,12 @@ pub struct Mark {
     pub removed: bool,
 }
 
-/// The render's marks, from its reports and the engine's map on the reports' clock (spec 008
-/// D6): a report's position excludes the coder's delay `C`, so its splice reaches the output at
-/// the position + `C`, and its input span starts at the position less the latency less `C`.
+/// The render's marks, from its reports and the engine's one-pass output map (engine 0.95,
+/// spec 028): a report is heard on the output at its position plus the heard shift `H` (the
+/// engine's `one_pass_splice_output_position`), and its input span starts at the position less
+/// the latency less `H` (the input before the coder and the playback half).
 pub fn marks(r: &Render) -> Vec<Mark> {
-    let c = u64::from(r.codec_delay_samples);
+    let c = u64::from(r.splice_shift_samples);
     let l = u64::from(r.latency_samples).saturating_sub(c);
     let mut before = 0u64;
     r.events
